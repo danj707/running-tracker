@@ -52,7 +52,7 @@ async function api(path, opts = {}) {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
-  if (res.status === 401) {
+  if (res.status === 401 && path !== '/api/login') {
     showLogin();
     throw new Error('Not logged in');
   }
@@ -610,7 +610,7 @@ function wireForms() {
     e.preventDefault();
     $('#loginErr').textContent = '';
     try {
-      await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('#loginPassword').value }) });
+      await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('#loginPassword').value.trim() }) });
       location.reload();
     } catch (err) {
       $('#loginErr').textContent = err.message;

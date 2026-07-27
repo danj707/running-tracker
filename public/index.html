@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Running Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏃</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="login" class="login hidden">
+  <div class="card">
+    <h1>🏃 Running Tracker</h1>
+    <form id="loginForm">
+      <div class="field">
+        <label for="loginPassword">Password</label>
+        <input type="password" id="loginPassword" autocomplete="current-password" required>
+      </div>
+      <div class="err" id="loginErr"></div>
+      <button class="primary" type="submit">Log in</button>
+    </form>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>🏃 Running Tracker</h1>
+    <span class="sub" id="headerSub"></span>
+    <button class="ghost hidden" id="logoutBtn" type="button">Log out</button>
+  </header>
+
+  <main>
+    <section class="filters" aria-label="Date range">
+      <span class="label">Range</span>
+      <div class="seg" id="rangeSeg" role="group" aria-label="Date range presets"></div>
+    </section>
+
+    <section class="tiles" id="tiles" aria-label="Summary stats"></section>
+
+    <div class="grid2">
+      <section class="card">
+        <h2>Add a run</h2>
+        <div class="card-sub">Distance, time, and any notes</div>
+        <form class="run-form" id="addForm">
+          <div class="field">
+            <label for="addDate">Date</label>
+            <input type="date" id="addDate" required>
+          </div>
+          <div class="field">
+            <label for="addMiles">Miles</label>
+            <input type="number" id="addMiles" class="narrow" step="0.01" min="0.01" max="300" required>
+          </div>
+          <div class="field">
+            <label for="addH">Time (h : m : s)</label>
+            <div class="dur-group">
+              <input type="number" id="addH" class="narrow" min="0" max="48" placeholder="h" value="0">
+              <input type="number" id="addM" class="narrow" min="0" max="59" placeholder="m" required>
+              <input type="number" id="addS" class="narrow" min="0" max="59" placeholder="s" value="0">
+            </div>
+          </div>
+          <div class="field" style="flex:1; min-width: 140px;">
+            <label for="addNotes">Notes</label>
+            <input type="text" id="addNotes" maxlength="2000" placeholder="optional">
+          </div>
+          <button class="primary" type="submit">Add run</button>
+          <div class="form-msg" id="addMsg"></div>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Goals</h2>
+        <div class="card-sub">Weekly target and next race</div>
+        <div id="goalsBody"></div>
+        <button class="ghost" id="editGoalsBtn" type="button">Edit goals</button>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Weekly mileage</h2>
+      <div class="card-sub" id="weeklySub"></div>
+      <div class="chart-wrap" id="weeklyChart"></div>
+    </section>
+
+    <section class="card">
+      <h2>Pace trend</h2>
+      <div class="card-sub">Per-run average pace — faster is up</div>
+      <div class="chart-wrap" id="paceChart"></div>
+    </section>
+
+    <section class="card">
+      <h2>Run log</h2>
+      <div class="card-sub" id="logSub"></div>
+      <div style="overflow-x:auto">
+        <table id="runTable">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th class="num">Miles</th>
+              <th class="num">Time</th>
+              <th class="num">Pace</th>
+              <th>Notes</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="empty-note hidden" id="logEmpty">No runs yet — add your first run above.</div>
+    </section>
+  </main>
+</div>
+
+<dialog id="goalsDialog">
+  <h2>Edit goals</h2>
+  <form id="goalsForm" method="dialog">
+    <div class="field">
+      <label for="goalWeekly">Weekly mileage target (miles)</label>
+      <input type="number" id="goalWeekly" step="0.5" min="0" placeholder="e.g. 20">
+    </div>
+    <div class="field">
+      <label for="goalRaceName">Race name</label>
+      <input type="text" id="goalRaceName" maxlength="200" placeholder="e.g. SF Half Marathon">
+    </div>
+    <div class="field">
+      <label for="goalRaceDate">Race date</label>
+      <input type="date" id="goalRaceDate">
+    </div>
+    <div class="field">
+      <label for="goalRaceMiles">Race distance (miles)</label>
+      <input type="number" id="goalRaceMiles" step="0.1" min="0" placeholder="e.g. 13.1">
+    </div>
+    <div class="dialog-actions">
+      <button class="ghost" type="button" id="goalsCancel">Cancel</button>
+      <button class="primary" type="submit">Save goals</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="editDialog">
+  <h2>Edit run</h2>
+  <form id="editForm" method="dialog">
+    <div class="field">
+      <label for="editDate">Date</label>
+      <input type="date" id="editDate" required>
+    </div>
+    <div class="field">
+      <label for="editMiles">Miles</label>
+      <input type="number" id="editMiles" step="0.01" min="0.01" max="300" required>
+    </div>
+    <div class="field">
+      <label for="editH">Time (h : m : s)</label>
+      <div class="dur-group">
+        <input type="number" id="editH" class="narrow" min="0" max="48" value="0">
+        <input type="number" id="editM" class="narrow" min="0" max="59" required>
+        <input type="number" id="editS" class="narrow" min="0" max="59" value="0">
+      </div>
+    </div>
+    <div class="field">
+      <label for="editNotes">Notes</label>
+      <input type="text" id="editNotes" maxlength="2000">
+    </div>
+    <div class="dialog-actions">
+      <button class="ghost" type="button" id="editCancel">Cancel</button>
+      <button class="primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

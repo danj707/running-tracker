@@ -1,0 +1,13 @@
+{
+  "name": "running-tracker",
+  "version": "1.0.0",
+  "description": "Personal running tracker — run log, weekly mileage, trends, goals",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "pg": "^8.13.0"
+  }
+}

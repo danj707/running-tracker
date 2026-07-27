@@ -155,6 +155,18 @@ button.ghost:hover { color: var(--ink); }
 
 .empty-note { color: var(--muted); font-size: 13.5px; padding: 18px 0; }
 
+/* Mood picker */
+.mood-picker { display: flex; gap: 4px; }
+.mood-picker button {
+  appearance: none; font-size: 18px; line-height: 1; background: none;
+  border: 1px solid transparent; border-radius: 8px; padding: 5px 6px;
+  cursor: pointer; filter: grayscale(1) opacity(0.55);
+}
+.mood-picker button:hover { filter: grayscale(0.3); }
+.mood-picker button[aria-pressed="true"] {
+  filter: none; border-color: var(--series); background: var(--page);
+}
+
 /* Table */
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th {
@@ -163,13 +175,29 @@ th {
 }
 td { padding: 8px 10px; border-bottom: 1px solid var(--grid); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-td.notes { color: var(--ink-2); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-tr .row-actions { opacity: 0; display: flex; gap: 6px; justify-content: flex-end; }
-tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
+th.mood-col { text-align: center; }
+td.mood-cell { text-align: center; font-size: 16px; }
+
+tr.run-row { cursor: pointer; }
+tr.run-row:hover td { background: var(--page); }
+td.chev { width: 26px; color: var(--muted); font-size: 11px; padding-right: 0; }
+tr.run-row[aria-expanded="true"] td.chev { color: var(--ink); }
+
+tr.detail-row > td {
+  background: var(--page);
+  padding: 14px 16px 16px 36px;
+  border-bottom: 1px solid var(--grid);
+}
+.detail-grid { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 10px; }
+.detail-grid .d-item .d-label { font-size: 11.5px; color: var(--muted); }
+.detail-grid .d-item .d-value { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.detail-notes { font-size: 13.5px; color: var(--ink-2); margin-bottom: 12px; max-width: 70ch; }
+.detail-notes a { color: var(--series); }
+.row-actions { display: flex; gap: 6px; }
 .row-actions button {
   appearance: none; font-size: 12px; font-family: inherit; background: none;
   border: 1px solid var(--border); border-radius: 6px; color: var(--ink-2);
-  padding: 2px 8px; cursor: pointer;
+  padding: 3px 10px; cursor: pointer;
 }
 .row-actions button:hover { color: var(--ink); }
 

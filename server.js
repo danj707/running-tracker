@@ -42,6 +42,9 @@ async function initDb() {
         goals JSONB NOT NULL DEFAULT '{}'::jsonb
       );
       INSERT INTO settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+      ALTER TABLE runs ADD COLUMN IF NOT EXISTS avg_hr INTEGER;
+      ALTER TABLE runs ADD COLUMN IF NOT EXISTS max_hr INTEGER;
+      ALTER TABLE runs ADD COLUMN IF NOT EXISTS mood SMALLINT;
     `);
     dbReady = true;
     console.log('Database schema ready.');
@@ -120,6 +123,13 @@ app.use('/api', (req, res, next) => {
 
 // --- runs -------------------------------------------------------------
 
+function optInt(v, min, max) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < min || n > max) return null;
+  return n;
+}
+
 function parseRun(body) {
   const date = String(body.date || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'date must be YYYY-MM-DD' };
@@ -128,11 +138,15 @@ function parseRun(body) {
   const seconds = Math.round(Number(body.seconds));
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 48 * 3600) return { error: 'duration must be positive' };
   const notes = String(body.notes || '').slice(0, 2000);
-  return { date, miles, seconds, notes };
+  const avgHr = optInt(body.avgHr, 30, 250);
+  const maxHr = optInt(body.maxHr, 30, 250);
+  const mood = optInt(body.mood, 1, 5);
+  return { date, miles, seconds, notes, avgHr, maxHr, mood };
 }
 
 const RUN_COLUMNS = `id, to_char(run_date, 'YYYY-MM-DD') AS date,
-  distance_miles::float AS miles, duration_seconds AS seconds, notes`;
+  distance_miles::float AS miles, duration_seconds AS seconds, notes,
+  avg_hr AS "avgHr", max_hr AS "maxHr", mood`;
 
 app.get('/api/runs', async (req, res) => {
   try {
@@ -149,9 +163,9 @@ app.post('/api/runs', async (req, res) => {
   if (run.error) return res.status(400).json({ error: run.error });
   try {
     const { rows } = await pool.query(
-      `INSERT INTO runs (run_date, distance_miles, duration_seconds, notes)
-       VALUES ($1, $2, $3, $4) RETURNING ${RUN_COLUMNS}`,
-      [run.date, run.miles, run.seconds, run.notes]
+      `INSERT INTO runs (run_date, distance_miles, duration_seconds, notes, avg_hr, max_hr, mood)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ${RUN_COLUMNS}`,
+      [run.date, run.miles, run.seconds, run.notes, run.avgHr, run.maxHr, run.mood]
     );
     res.status(201).json({ run: rows[0] });
   } catch (err) {
@@ -167,9 +181,10 @@ app.put('/api/runs/:id', async (req, res) => {
   if (run.error) return res.status(400).json({ error: run.error });
   try {
     const { rows } = await pool.query(
-      `UPDATE runs SET run_date = $1, distance_miles = $2, duration_seconds = $3, notes = $4
-       WHERE id = $5 RETURNING ${RUN_COLUMNS}`,
-      [run.date, run.miles, run.seconds, run.notes, id]
+      `UPDATE runs SET run_date = $1, distance_miles = $2, duration_seconds = $3, notes = $4,
+         avg_hr = $5, max_hr = $6, mood = $7
+       WHERE id = $8 RETURNING ${RUN_COLUMNS}`,
+      [run.date, run.miles, run.seconds, run.notes, run.avgHr, run.maxHr, run.mood, id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Run not found' });
     res.json({ run: rows[0] });

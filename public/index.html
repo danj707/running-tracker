@@ -60,9 +60,21 @@
               <input type="number" id="addS" class="narrow" min="0" max="59" placeholder="s" value="0">
             </div>
           </div>
+          <div class="field">
+            <label for="addAvgHr">Avg HR</label>
+            <input type="number" id="addAvgHr" class="narrow" min="30" max="250" placeholder="bpm">
+          </div>
+          <div class="field">
+            <label for="addMaxHr">Max HR</label>
+            <input type="number" id="addMaxHr" class="narrow" min="30" max="250" placeholder="bpm">
+          </div>
           <div class="field" style="flex:1; min-width: 140px;">
             <label for="addNotes">Notes</label>
-            <input type="text" id="addNotes" maxlength="2000" placeholder="optional">
+            <input type="text" id="addNotes" maxlength="2000" placeholder="optional — links become clickable">
+          </div>
+          <div class="field">
+            <label>How did it feel?</label>
+            <div class="mood-picker" id="addMood"></div>
           </div>
           <button class="primary" type="submit">Add run</button>
           <div class="form-msg" id="addMsg"></div>
@@ -96,12 +108,13 @@
         <table id="runTable">
           <thead>
             <tr>
+              <th></th>
               <th>Date</th>
               <th class="num">Miles</th>
               <th class="num">Time</th>
               <th class="num">Pace</th>
-              <th>Notes</th>
-              <th></th>
+              <th class="num">Avg HR</th>
+              <th class="mood-col">Felt</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -158,8 +171,20 @@
       </div>
     </div>
     <div class="field">
+      <label for="editAvgHr">Avg HR (bpm)</label>
+      <input type="number" id="editAvgHr" min="30" max="250">
+    </div>
+    <div class="field">
+      <label for="editMaxHr">Max HR (bpm)</label>
+      <input type="number" id="editMaxHr" min="30" max="250">
+    </div>
+    <div class="field">
       <label for="editNotes">Notes</label>
       <input type="text" id="editNotes" maxlength="2000">
+    </div>
+    <div class="field">
+      <label>How did it feel?</label>
+      <div class="mood-picker" id="editMood"></div>
     </div>
     <div class="dialog-actions">
       <button class="ghost" type="button" id="editCancel">Cancel</button>

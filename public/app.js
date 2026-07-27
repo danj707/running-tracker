@@ -14,6 +14,53 @@ const RANGES = [
 
 const $ = (sel) => document.querySelector(sel);
 
+const MOODS = { 1: ['😖', 'Rough'], 2: ['😕', 'Meh'], 3: ['😐', 'OK'], 4: ['🙂', 'Good'], 5: ['🤩', 'Great'] };
+const expandedRuns = new Set();
+
+// mood picker: 5 emoji toggle buttons writing to a data attribute
+function initMoodPicker(el) {
+  for (const [val, [emoji, label]] of Object.entries(MOODS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = emoji;
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    b.setAttribute('aria-pressed', 'false');
+    b.dataset.val = val;
+    b.addEventListener('click', () => {
+      const on = b.getAttribute('aria-pressed') === 'true';
+      el.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', 'false'));
+      if (!on) b.setAttribute('aria-pressed', 'true');
+      el.dataset.mood = on ? '' : val;
+    });
+    el.appendChild(b);
+  }
+}
+function setMoodPicker(el, mood) {
+  el.dataset.mood = mood || '';
+  el.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.val) === mood)));
+}
+const getMood = (el) => (el.dataset.mood ? Number(el.dataset.mood) : null);
+
+// notes are untrusted text; only http(s) URLs become anchors
+function notesToFragment(text) {
+  const frag = document.createDocumentFragment();
+  const parts = String(text).split(/(https?:\/\/[^\s]+)/g);
+  parts.forEach((part, i) => {
+    if (i % 2 === 1) {
+      const a = document.createElement('a');
+      a.href = part;
+      a.textContent = part;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      frag.appendChild(a);
+    } else if (part) {
+      frag.appendChild(document.createTextNode(part));
+    }
+  });
+  return frag;
+}
+
 // ---------- date & format helpers ----------
 
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -530,10 +577,12 @@ function renderPaceChart() {
     cross.setAttribute('x1', x(p.t));
     cross.setAttribute('x2', x(p.t));
     cross.setAttribute('visibility', 'visible');
-    fillTooltip(tt, fmtTable(p.run.date), [
+    const rows = [
       [`${fmtPace(p.pace)} /mi`, 'pace'],
       [`${fmtMiles(p.run.miles)} mi`, fmtDur(p.run.seconds)],
-    ]);
+    ];
+    if (p.run.avgHr) rows.push([`${p.run.avgHr} bpm`, p.run.maxHr ? `avg HR (max ${p.run.maxHr})` : 'avg HR']);
+    fillTooltip(tt, fmtTable(p.run.date), rows);
     const wrect = wrap.getBoundingClientRect();
     placeTooltip(tt, wrap, x(p.t), Math.min(e.clientY - wrect.top, y(p.pace)));
   });
@@ -552,48 +601,112 @@ function renderTable() {
   const runs = filteredRuns();
   const tbody = $('#runTable tbody');
   tbody.textContent = '';
-  $('#logSub').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'} in range`;
+  $('#logSub').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'} in range — click a row for details`;
   $('#logEmpty').classList.toggle('hidden', runs.length > 0);
 
   for (const r of runs) {
+    const expanded = expandedRuns.has(r.id);
     const tr = document.createElement('tr');
+    tr.className = 'run-row';
+    tr.tabIndex = 0;
+    tr.setAttribute('aria-expanded', String(expanded));
+
+    const chev = document.createElement('td');
+    chev.className = 'chev';
+    chev.textContent = expanded ? '▼' : '▶';
+    tr.appendChild(chev);
+
     const cells = [
       [fmtTable(r.date), ''],
       [fmtMiles(r.miles), 'num'],
       [fmtDur(r.seconds), 'num'],
       [fmtPace(r.seconds / r.miles), 'num'],
-      [r.notes, 'notes'],
+      [r.avgHr ? String(r.avgHr) : '—', 'num'],
+      [r.mood ? MOODS[r.mood][0] : '—', 'mood-cell'],
     ];
     for (const [text, cls] of cells) {
       const td = document.createElement('td');
       if (cls) td.className = cls;
       td.textContent = text;
-      if (cls === 'notes' && text) td.title = text;
+      if (cls === 'mood-cell' && r.mood) td.title = MOODS[r.mood][1];
       tr.appendChild(td);
     }
-    const td = document.createElement('td');
-    const actions = document.createElement('div');
-    actions.className = 'row-actions';
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.textContent = 'Edit';
-    edit.addEventListener('click', () => openEdit(r));
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.textContent = 'Delete';
-    del.addEventListener('click', async () => {
-      if (!confirm(`Delete the ${fmtMiles(r.miles)} mi run on ${fmtTable(r.date)}?`)) return;
-      try {
-        await api(`/api/runs/${r.id}`, { method: 'DELETE' });
-        state.runs = state.runs.filter((x) => x.id !== r.id);
-        renderAll();
-      } catch (err) { alert(err.message); }
+
+    const toggle = () => {
+      if (expandedRuns.has(r.id)) expandedRuns.delete(r.id);
+      else expandedRuns.add(r.id);
+      renderTable();
+    };
+    tr.addEventListener('click', toggle);
+    tr.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
     });
-    actions.append(edit, del);
-    td.appendChild(actions);
-    tr.appendChild(td);
     tbody.appendChild(tr);
+
+    if (expanded) tbody.appendChild(buildDetailRow(r));
   }
+}
+
+function buildDetailRow(r) {
+  const tr = document.createElement('tr');
+  tr.className = 'detail-row';
+  const td = document.createElement('td');
+  td.colSpan = 7;
+
+  const grid = document.createElement('div');
+  grid.className = 'detail-grid';
+  const items = [
+    ['Distance', `${fmtMiles(r.miles)} mi`],
+    ['Time', fmtDur(r.seconds)],
+    ['Pace', `${fmtPace(r.seconds / r.miles)} /mi`],
+    ['Avg HR', r.avgHr ? `${r.avgHr} bpm` : '—'],
+    ['Max HR', r.maxHr ? `${r.maxHr} bpm` : '—'],
+    ['Felt', r.mood ? `${MOODS[r.mood][0]} ${MOODS[r.mood][1]}` : 'Not rated'],
+  ];
+  for (const [label, value] of items) {
+    const item = document.createElement('div');
+    item.className = 'd-item';
+    const l = document.createElement('div');
+    l.className = 'd-label';
+    l.textContent = label;
+    const v = document.createElement('div');
+    v.className = 'd-value';
+    v.textContent = value;
+    item.append(l, v);
+    grid.appendChild(item);
+  }
+  td.appendChild(grid);
+
+  if (r.notes) {
+    const notes = document.createElement('div');
+    notes.className = 'detail-notes';
+    notes.appendChild(notesToFragment(r.notes));
+    td.appendChild(notes);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'row-actions';
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.textContent = 'Edit';
+  edit.addEventListener('click', () => openEdit(r));
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.textContent = 'Delete';
+  del.addEventListener('click', async () => {
+    if (!confirm(`Delete the ${fmtMiles(r.miles)} mi run on ${fmtTable(r.date)}?`)) return;
+    try {
+      await api(`/api/runs/${r.id}`, { method: 'DELETE' });
+      state.runs = state.runs.filter((x) => x.id !== r.id);
+      expandedRuns.delete(r.id);
+      renderAll();
+    } catch (err) { alert(err.message); }
+  });
+  actions.append(edit, del);
+  td.appendChild(actions);
+
+  tr.appendChild(td);
+  return tr;
 }
 
 // ---------- forms ----------
@@ -606,6 +719,9 @@ function readDuration(prefix) {
 }
 
 function wireForms() {
+  initMoodPicker($('#addMood'));
+  initMoodPicker($('#editMood'));
+
   $('#loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     $('#loginErr').textContent = '';
@@ -636,12 +752,16 @@ function wireForms() {
           miles: Number($('#addMiles').value),
           seconds,
           notes: $('#addNotes').value.trim(),
+          avgHr: $('#addAvgHr').value || null,
+          maxHr: $('#addMaxHr').value || null,
+          mood: getMood($('#addMood')),
         }),
       });
       state.runs.push(run);
       state.runs.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
-      for (const id of ['addMiles', 'addH', 'addM', 'addS', 'addNotes']) $(`#${id}`).value = '';
+      for (const id of ['addMiles', 'addH', 'addM', 'addS', 'addNotes', 'addAvgHr', 'addMaxHr']) $(`#${id}`).value = '';
       $('#addH').value = '0'; $('#addS').value = '0';
+      setMoodPicker($('#addMood'), null);
       msg.textContent = 'Run added ✓';
       setTimeout(() => { if (msg.textContent === 'Run added ✓') msg.textContent = ''; }, 2500);
       renderAll();
@@ -664,6 +784,9 @@ function wireForms() {
           miles: Number($('#editMiles').value),
           seconds: readDuration('edit'),
           notes: $('#editNotes').value.trim(),
+          avgHr: $('#editAvgHr').value || null,
+          maxHr: $('#editMaxHr').value || null,
+          mood: getMood($('#editMood')),
         }),
       });
       const i = state.runs.findIndex((r) => r.id === id);
@@ -719,6 +842,9 @@ function openEdit(r) {
   $('#editM').value = String(Math.floor((r.seconds % 3600) / 60));
   $('#editS').value = String(r.seconds % 60);
   $('#editNotes').value = r.notes || '';
+  $('#editAvgHr').value = r.avgHr || '';
+  $('#editMaxHr').value = r.maxHr || '';
+  setMoodPicker($('#editMood'), r.mood || null);
   d.showModal();
 }
 

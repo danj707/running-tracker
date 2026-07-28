@@ -114,6 +114,19 @@
       <div class="chart-wrap" id="paceChart"></div>
     </section>
 
+    <div class="grid2">
+      <section class="card">
+        <h2>Avg heart rate per run</h2>
+        <div class="card-sub">Lower HR at the same pace = aerobic progress</div>
+        <div class="chart-wrap" id="hrChart"></div>
+      </section>
+      <section class="card">
+        <h2>Weekly avg pace</h2>
+        <div class="card-sub">Runs only — faster is up</div>
+        <div class="chart-wrap" id="weeklyPaceChart"></div>
+      </section>
+    </div>
+
     <section class="card">
       <h2>Activity log</h2>
       <div class="card-sub" id="logSub"></div>
@@ -135,6 +148,47 @@
         </table>
       </div>
       <div class="empty-note hidden" id="logEmpty">No runs yet — add your first run above.</div>
+    </section>
+
+    <div class="grid2">
+      <section class="card">
+        <h2>Weight</h2>
+        <div class="card-sub">Judge the multi-week slope, never the daily dot</div>
+        <div class="chart-wrap" id="weightChart"></div>
+      </section>
+      <section class="card">
+        <h2>Body composition</h2>
+        <div class="card-sub">Body fat · skeletal muscle · body water (%)</div>
+        <div class="chart-wrap" id="compChart"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Body metrics</h2>
+      <div class="card-sub">One row per day — same-date imports update the row</div>
+      <div class="body-actions">
+        <button class="ghost" id="bodyImportBtn" type="button">📸 Import scale screenshots</button>
+        <input type="file" id="bodyImportFiles" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+        <button class="ghost" id="bodyAddBtn" type="button">Add weigh-in</button>
+        <span class="form-msg" id="bodyMsg"></span>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="bodyTable">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Date</th>
+              <th class="num">Weight</th>
+              <th class="num">Body fat</th>
+              <th class="num">Muscle</th>
+              <th class="num">Water</th>
+              <th class="num">BMI</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="empty-note hidden" id="bodyEmpty">No weigh-ins yet — import a scale screenshot above.</div>
     </section>
   </main>
 </div>
@@ -206,6 +260,31 @@
     </div>
     <div class="dialog-actions">
       <button class="ghost" type="button" id="editCancel">Cancel</button>
+      <button class="primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="bodyDialog">
+  <h2 id="bodyDialogTitle">Add weigh-in</h2>
+  <form id="bodyForm" method="dialog">
+    <div class="field">
+      <label for="bDate">Date</label>
+      <input type="date" id="bDate" required>
+    </div>
+    <div class="dialog-grid">
+      <div class="field"><label for="bWeight">Weight (lb)</label><input type="number" id="bWeight" step="0.1" min="50" max="600"></div>
+      <div class="field"><label for="bFat">Body fat (%)</label><input type="number" id="bFat" step="0.1" min="1" max="80"></div>
+      <div class="field"><label for="bMuscle">Skeletal muscle (%)</label><input type="number" id="bMuscle" step="0.1" min="10" max="90"></div>
+      <div class="field"><label for="bWater">Body water (%)</label><input type="number" id="bWater" step="0.1" min="10" max="90"></div>
+      <div class="field"><label for="bBmi">BMI</label><input type="number" id="bBmi" step="0.1" min="8" max="80"></div>
+      <div class="field"><label for="bSubq">Subcutaneous fat (%)</label><input type="number" id="bSubq" step="0.1" min="1" max="80"></div>
+      <div class="field"><label for="bVisceral">Visceral fat</label><input type="number" id="bVisceral" step="0.1" min="1" max="60"></div>
+      <div class="field"><label for="bBone">Bone mass (lb)</label><input type="number" id="bBone" step="0.1" min="1" max="30"></div>
+      <div class="field"><label for="bBmr">BMR (kcal)</label><input type="number" id="bBmr" min="500" max="6000"></div>
+    </div>
+    <div class="dialog-actions">
+      <button class="ghost" type="button" id="bodyCancel">Cancel</button>
       <button class="primary" type="submit">Save</button>
     </div>
   </form>

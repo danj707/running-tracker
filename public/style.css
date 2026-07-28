@@ -13,6 +13,8 @@
   --series: #2a78d6;
   --series-strong: #1c5cab;
   --series-track: #cde2fb;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
   --good: #006300;
 }
 
@@ -30,6 +32,8 @@
     --series: #3987e5;
     --series-strong: #6da7ec;
     --series-track: #104281;
+    --series-2: #d95926;
+    --series-3: #199e70;
     --good: #0ca30c;
   }
 }
@@ -209,6 +213,13 @@ td.type-cell, th.type-col { text-align: center; font-size: 15px; width: 34px; }
 .tooltip .tt-label { color: var(--ink-2); }
 
 .empty-note { color: var(--muted); font-size: 13.5px; padding: 18px 0; }
+
+.legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+.legend-key { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+
+.body-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.dialog-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 /* Mood picker */
 .mood-picker { display: flex; gap: 4px; }

@@ -2,7 +2,7 @@
 
 // ---------- state ----------
 
-const state = { runs: [], goals: {}, range: '12W' };
+const state = { runs: [], goals: {}, body: [], range: '12W' };
 
 const RANGES = [
   { key: '4W', label: '4 wk', weeks: 4 },
@@ -176,9 +176,10 @@ async function init() {
 
 async function loadData() {
   try {
-    const [runsRes, goalsRes] = await Promise.all([api('/api/runs'), api('/api/goals')]);
+    const [runsRes, goalsRes, bodyRes] = await Promise.all([api('/api/runs'), api('/api/goals'), api('/api/body')]);
     state.runs = runsRes.runs;
     state.goals = goalsRes.goals || {};
+    state.body = bodyRes.metrics || [];
     $('#headerSub').textContent = '';
     renderAll();
   } catch (err) {
@@ -222,12 +223,22 @@ function buildRangeSeg() {
 
 // ---------- rendering ----------
 
+function filteredBody() {
+  const cutoff = rangeCutoff();
+  if (!cutoff) return state.body;
+  const c = ymd(cutoff);
+  return state.body.filter((m) => m.date >= c);
+}
+
 function renderAll() {
   renderTiles();
   renderGoals();
   renderWeeklyChart();
   renderPaceChart();
+  renderRunTrends();
   renderTable();
+  renderBodyCharts();
+  renderBodyTable();
 }
 
 function tile(label, value, unit, delta, deltaUp) {
@@ -381,11 +392,12 @@ function fillTooltip(tt, title, rows) {
   t.className = 'tt-title';
   t.textContent = title;
   tt.appendChild(t);
-  for (const [val, label] of rows) {
+  for (const [val, label, color] of rows) {
     const row = document.createElement('div');
     row.className = 'tt-row';
     const key = document.createElement('span');
     key.className = 'tt-key';
+    if (color) key.style.borderTopColor = color;
     const v = document.createElement('span');
     v.className = 'tt-val';
     v.textContent = val;
@@ -628,6 +640,395 @@ function renderPaceChart() {
   svg.appendChild(overlay);
 }
 
+// ---------- generic multi-series trend chart ----------
+// series: [{ name, color, points: [{t, v, dateStr}] }] — points ascending by t.
+// opts: yFmt, tickCandidates, invertY (pace: faster up), unit, emptyMsg, height
+
+function renderMultiLine(wrap, seriesList, opts = {}) {
+  wrap.textContent = '';
+  const series = seriesList.filter((s) => s.points.length > 0);
+  const totalPts = series.reduce((a, s) => a + s.points.length, 0);
+  if (!series.length || totalPts < 2) {
+    const p = document.createElement('div');
+    p.className = 'empty-note';
+    p.textContent = opts.emptyMsg || 'Not enough data yet — two or more points draw a line.';
+    wrap.appendChild(p);
+    return;
+  }
+
+  if (series.length >= 2) {
+    const lg = document.createElement('div');
+    lg.className = 'legend';
+    for (const s of series) {
+      const item = document.createElement('span');
+      item.className = 'legend-item';
+      const key = document.createElement('span');
+      key.className = 'legend-key';
+      key.style.background = s.color;
+      const lbl = document.createElement('span');
+      lbl.textContent = s.name;
+      item.append(key, lbl);
+      lg.appendChild(item);
+    }
+    wrap.appendChild(lg);
+  }
+
+  const width = Math.max(300, wrap.clientWidth);
+  const height = opts.height || 200, mL = 48, mR = 16, mT = 12, mB = 26;
+  const plotW = width - mL - mR, plotH = height - mT - mB;
+  const svg = svgEl('svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img' });
+
+  const ts = [...new Set(series.flatMap((s) => s.points.map((p) => p.t)))].sort((a, b) => a - b);
+  const t0 = ts[0], t1 = ts[ts.length - 1] || t0 + 1;
+  const vs = series.flatMap((s) => s.points.map((p) => p.v));
+  let vMin = Math.min(...vs), vMax = Math.max(...vs);
+  const pad = Math.max((vMax - vMin) * 0.15, vMax === vMin ? Math.abs(vMax) * 0.02 + 1 : 0);
+  vMin -= pad; vMax += pad;
+
+  const x = (t) => (t1 === t0 ? mL + plotW / 2 : mL + ((t - t0) / (t1 - t0)) * plotW);
+  const y = (v) => (opts.invertY
+    ? mT + ((v - vMin) / (vMax - vMin)) * plotH
+    : mT + plotH - ((v - vMin) / (vMax - vMin)) * plotH);
+
+  const range = vMax - vMin;
+  let step;
+  if (opts.tickCandidates) {
+    step = opts.tickCandidates.find((s) => range / s <= 6) || opts.tickCandidates[opts.tickCandidates.length - 1];
+  } else {
+    const raw = range / 4;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+    step = [1, 2, 2.5, 5, 10].map((s) => s * mag).find((s) => s >= raw) || mag * 10;
+  }
+  const yFmt = opts.yFmt || ((v) => fmtMiles(v));
+  for (let v = Math.ceil(vMin / step) * step; v <= vMax + 1e-9; v += step) {
+    const vv = Math.round(v * 1000) / 1000;
+    svg.appendChild(svgEl('line', { x1: mL, x2: width - mR, y1: y(vv), y2: y(vv), stroke: cssVar('--grid'), 'stroke-width': 1 }));
+    const t = svgEl('text', { x: mL - 8, y: y(vv) + 4, 'text-anchor': 'end', fill: cssVar('--muted'), 'font-size': 11, style: 'font-variant-numeric: tabular-nums' });
+    t.textContent = yFmt(vv);
+    svg.appendChild(t);
+  }
+  svg.appendChild(svgEl('line', { x1: mL, x2: width - mR, y1: mT + plotH, y2: mT + plotH, stroke: cssVar('--baseline'), 'stroke-width': 1 }));
+
+  const nLabels = Math.min(5, ts.length);
+  for (let i = 0; i < nLabels; i++) {
+    const t = t0 + ((t1 - t0) * i) / Math.max(1, nLabels - 1);
+    const lbl = svgEl('text', { x: x(t), y: height - 8, 'text-anchor': 'middle', fill: cssVar('--muted'), 'font-size': 11 });
+    lbl.textContent = fmtShort(new Date(t));
+    svg.appendChild(lbl);
+  }
+
+  const surface = cssVar('--surface');
+  for (const s of series) {
+    const d = s.points.map((p, i) => `${i ? 'L' : 'M'} ${x(p.t).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ');
+    svg.appendChild(svgEl('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    for (const p of s.points) {
+      svg.appendChild(svgEl('circle', { cx: x(p.t), cy: y(p.v), r: 4, fill: s.color, stroke: surface, 'stroke-width': 2 }));
+    }
+    // single series: direct-label the latest value; flip inside when it won't fit
+    if (series.length === 1 && s.points.length) {
+      const last = s.points[s.points.length - 1];
+      const lx = x(last.t);
+      const fits = lx + 9 + 42 <= width;
+      const endLbl = svgEl('text', {
+        x: fits ? lx + 9 : lx - 8,
+        y: fits ? y(last.v) + 4 : y(last.v) - 9,
+        'text-anchor': fits ? 'start' : 'end',
+        fill: cssVar('--ink-2'), 'font-size': 11, 'font-weight': 600,
+      });
+      endLbl.textContent = yFmt(last.v);
+      svg.appendChild(endLbl);
+    }
+  }
+
+  const cross = svgEl('line', { y1: mT, y2: mT + plotH, stroke: cssVar('--baseline'), 'stroke-width': 1, visibility: 'hidden' });
+  svg.appendChild(cross);
+  const overlay = svgEl('rect', { x: mL, y: mT, width: plotW, height: plotH, fill: 'transparent' });
+  wrap.appendChild(svg);
+  const tt = makeTooltip(wrap);
+
+  overlay.addEventListener('pointermove', (e) => {
+    const rect = svg.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    let best = ts[0], bestDist = Infinity;
+    for (const t of ts) {
+      const dx = Math.abs(x(t) - px);
+      if (dx < bestDist) { bestDist = dx; best = t; }
+    }
+    cross.setAttribute('x1', x(best));
+    cross.setAttribute('x2', x(best));
+    cross.setAttribute('visibility', 'visible');
+    const rows = [];
+    let title = fmtShort(new Date(best));
+    for (const s of series) {
+      const p = s.points.find((q) => q.t === best);
+      if (p) {
+        rows.push([`${yFmt(p.v)}${opts.unit ? ` ${opts.unit}` : ''}`, s.name, s.color]);
+        if (p.dateStr) title = fmtTable(p.dateStr);
+      }
+    }
+    if (!rows.length) return;
+    fillTooltip(tt, title, rows);
+    const wrect = wrap.getBoundingClientRect();
+    placeTooltip(tt, wrap, x(best), e.clientY - wrect.top);
+  });
+  overlay.addEventListener('pointerleave', () => {
+    cross.setAttribute('visibility', 'hidden');
+    tt.classList.add('hidden');
+  });
+  svg.appendChild(overlay);
+}
+
+const V1 = () => cssVar('--series');
+const V2 = () => cssVar('--series-2');
+const V3 = () => cssVar('--series-3');
+
+function renderRunTrends() {
+  const runs = filteredRuns().filter((r) => (r.type === 'run' || !r.type)).slice().reverse();
+
+  renderMultiLine($('#hrChart'), [{
+    name: 'Avg HR',
+    color: V1(),
+    points: runs.filter((r) => r.avgHr).map((r) => ({ t: parseYmd(r.date).getTime(), v: r.avgHr, dateStr: r.date })),
+  }], {
+    yFmt: (v) => String(Math.round(v)),
+    unit: 'bpm',
+    emptyMsg: 'Log avg HR on two or more runs to see the trend.',
+  });
+
+  // weekly average pace across runs with distance
+  const byWeek = new Map();
+  for (const r of runs) {
+    if (!(r.miles > 0)) continue;
+    const wk = ymd(weekStart(parseYmd(r.date)));
+    if (!byWeek.has(wk)) byWeek.set(wk, { miles: 0, sec: 0 });
+    const b = byWeek.get(wk);
+    b.miles += r.miles;
+    b.sec += r.seconds;
+  }
+  const weekPts = [...byWeek.entries()]
+    .map(([wk, b]) => ({ t: parseYmd(wk).getTime(), v: b.sec / b.miles, dateStr: wk }))
+    .sort((a, b) => a.t - b.t);
+
+  renderMultiLine($('#weeklyPaceChart'), [{ name: 'Weekly pace', color: V1(), points: weekPts }], {
+    yFmt: fmtPace,
+    unit: '/mi',
+    invertY: true,
+    tickCandidates: [15, 30, 60, 120, 300],
+    emptyMsg: 'Two or more weeks of runs draw the pace trend.',
+  });
+}
+
+// ---------- body metrics ----------
+
+const expandedBody = new Set();
+
+const BODY_FIELDS = [
+  ['weightLb', 'Weight', 'lb'],
+  ['bodyFatPct', 'Body fat', '%'],
+  ['skeletalMusclePct', 'Skeletal muscle', '%'],
+  ['bodyWaterPct', 'Body water', '%'],
+  ['bmi', 'BMI', ''],
+  ['subcutaneousFatPct', 'Subcutaneous fat', '%'],
+  ['visceralFat', 'Visceral fat', ''],
+  ['boneMassLb', 'Bone mass', 'lb'],
+  ['bmrKcal', 'BMR', 'kcal'],
+];
+
+function renderBodyCharts() {
+  const rows = filteredBody().slice().reverse(); // ascending
+  const pts = (field) => rows.filter((m) => m[field] != null)
+    .map((m) => ({ t: parseYmd(m.date).getTime(), v: m[field], dateStr: m.date }));
+
+  renderMultiLine($('#weightChart'), [{ name: 'Weight', color: V1(), points: pts('weightLb') }], {
+    yFmt: (v) => v.toFixed(1),
+    unit: 'lb',
+    emptyMsg: 'Two or more weigh-ins draw the weight trend.',
+  });
+
+  renderMultiLine($('#compChart'), [
+    { name: 'Body fat %', color: V2(), points: pts('bodyFatPct') },
+    { name: 'Muscle %', color: V3(), points: pts('skeletalMusclePct') },
+    { name: 'Water %', color: V1(), points: pts('bodyWaterPct') },
+  ], {
+    yFmt: (v) => v.toFixed(1),
+    unit: '%',
+    emptyMsg: 'Two or more weigh-ins draw the composition trends.',
+  });
+}
+
+function renderBodyTable() {
+  const rows = filteredBody();
+  const tbody = $('#bodyTable tbody');
+  tbody.textContent = '';
+  $('#bodyEmpty').classList.toggle('hidden', rows.length > 0);
+
+  const fmt = (v, unit) => (v == null ? '—' : `${v}${unit === '%' ? '%' : ''}`);
+  for (const m of rows) {
+    const expanded = expandedBody.has(m.id);
+    const tr = document.createElement('tr');
+    tr.className = 'run-row';
+    tr.tabIndex = 0;
+    tr.setAttribute('aria-expanded', String(expanded));
+    const chev = document.createElement('td');
+    chev.className = 'chev';
+    chev.textContent = expanded ? '▼' : '▶';
+    tr.appendChild(chev);
+    const cells = [
+      [fmtTable(m.date), ''],
+      [m.weightLb != null ? `${m.weightLb} lb` : '—', 'num'],
+      [fmt(m.bodyFatPct, '%'), 'num'],
+      [fmt(m.skeletalMusclePct, '%'), 'num'],
+      [fmt(m.bodyWaterPct, '%'), 'num'],
+      [fmt(m.bmi, ''), 'num'],
+    ];
+    for (const [text, cls] of cells) {
+      const td = document.createElement('td');
+      if (cls) td.className = cls;
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    const toggle = () => {
+      if (expandedBody.has(m.id)) expandedBody.delete(m.id);
+      else expandedBody.add(m.id);
+      renderBodyTable();
+    };
+    tr.addEventListener('click', toggle);
+    tr.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    });
+    tbody.appendChild(tr);
+
+    if (expanded) {
+      const dtr = document.createElement('tr');
+      dtr.className = 'detail-row';
+      const td = document.createElement('td');
+      td.colSpan = 7;
+      const grid = document.createElement('div');
+      grid.className = 'detail-grid';
+      for (const [field, label, unit] of BODY_FIELDS) {
+        const item = document.createElement('div');
+        item.className = 'd-item';
+        const l = document.createElement('div');
+        l.className = 'd-label';
+        l.textContent = label;
+        const v = document.createElement('div');
+        v.className = 'd-value';
+        v.textContent = m[field] == null ? '—' : `${m[field]}${unit === '%' ? '%' : unit ? ` ${unit}` : ''}`;
+        item.append(l, v);
+        grid.appendChild(item);
+      }
+      td.appendChild(grid);
+      const actions = document.createElement('div');
+      actions.className = 'row-actions';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.textContent = 'Edit';
+      edit.addEventListener('click', () => openBodyDialog(m));
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = 'Delete';
+      del.addEventListener('click', async () => {
+        if (!confirm(`Delete the weigh-in on ${fmtTable(m.date)}?`)) return;
+        try {
+          await api(`/api/body/${m.id}`, { method: 'DELETE' });
+          state.body = state.body.filter((x) => x.id !== m.id);
+          expandedBody.delete(m.id);
+          renderAll();
+        } catch (err) { alert(err.message); }
+      });
+      actions.append(edit, del);
+      td.appendChild(actions);
+      dtr.appendChild(td);
+      tbody.appendChild(dtr);
+    }
+  }
+}
+
+function upsertBodyState(metric) {
+  state.body = state.body.filter((x) => x.date !== metric.date);
+  state.body.push(metric);
+  state.body.sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+function openBodyDialog(m) {
+  const d = $('#bodyDialog');
+  d.dataset.metricId = m ? String(m.id) : '';
+  d.dataset.origDate = m ? m.date : '';
+  $('#bodyDialogTitle').textContent = m ? 'Edit weigh-in' : 'Add weigh-in';
+  $('#bDate').value = m ? m.date : ymd(new Date());
+  const map = { bWeight: 'weightLb', bFat: 'bodyFatPct', bMuscle: 'skeletalMusclePct', bWater: 'bodyWaterPct', bBmi: 'bmi', bSubq: 'subcutaneousFatPct', bVisceral: 'visceralFat', bBone: 'boneMassLb', bBmr: 'bmrKcal' };
+  for (const [inputId, field] of Object.entries(map)) {
+    $(`#${inputId}`).value = m && m[field] != null ? m[field] : '';
+  }
+  d.showModal();
+}
+
+function wireBody() {
+  const dialog = $('#bodyDialog');
+  $('#bodyAddBtn').addEventListener('click', () => openBodyDialog(null));
+  $('#bodyCancel').addEventListener('click', () => dialog.close());
+  $('#bodyForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const date = $('#bDate').value;
+      const origDate = dialog.dataset.origDate;
+      const { metric } = await api('/api/body', {
+        method: 'POST',
+        body: JSON.stringify({
+          date,
+          weightLb: $('#bWeight').value || null,
+          bodyFatPct: $('#bFat').value || null,
+          skeletalMusclePct: $('#bMuscle').value || null,
+          bodyWaterPct: $('#bWater').value || null,
+          bmi: $('#bBmi').value || null,
+          subcutaneousFatPct: $('#bSubq').value || null,
+          visceralFat: $('#bVisceral').value || null,
+          boneMassLb: $('#bBone').value || null,
+          bmrKcal: $('#bBmr').value || null,
+        }),
+      });
+      // date change on an existing row: remove the old row
+      if (origDate && origDate !== date) {
+        const old = state.body.find((x) => x.date === origDate);
+        if (old) {
+          await api(`/api/body/${old.id}`, { method: 'DELETE' }).catch(() => {});
+          state.body = state.body.filter((x) => x.id !== old.id);
+        }
+      }
+      upsertBodyState(metric);
+      dialog.close();
+      renderAll();
+    } catch (err) { alert(err.message); }
+  });
+
+  const btn = $('#bodyImportBtn');
+  const input = $('#bodyImportFiles');
+  const msg = $('#bodyMsg');
+  btn.addEventListener('click', () => input.click());
+  input.addEventListener('change', async () => {
+    const files = Array.from(input.files || []).slice(0, 6);
+    input.value = '';
+    if (!files.length) return;
+    btn.disabled = true;
+    msg.textContent = `Reading ${files.length} screenshot${files.length === 1 ? '' : 's'}…`;
+    try {
+      const images = [];
+      for (const f of files) images.push(await prepareImage(f));
+      const { metrics } = await api('/api/body-import', {
+        method: 'POST',
+        body: JSON.stringify({ images, defaultDate: ymd(new Date()) }),
+      });
+      for (const m of metrics) upsertBodyState(m);
+      renderAll();
+      msg.textContent = `Imported ${metrics.length} weigh-in${metrics.length === 1 ? '' : 's'} ✓`;
+      setTimeout(() => { if (msg.textContent.startsWith('Imported')) msg.textContent = ''; }, 4000);
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+    btn.disabled = false;
+  });
+}
+
 // ---------- run log table ----------
 
 function renderTable() {
@@ -826,6 +1227,7 @@ function wireForms() {
   fillTypeSelect($('#addType'));
   fillTypeSelect($('#editType'));
   wireImport();
+  wireBody();
 
   $('#loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -939,7 +1341,7 @@ function wireForms() {
   let resizeTimer;
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { renderWeeklyChart(); renderPaceChart(); }, 150);
+    resizeTimer = setTimeout(() => { renderWeeklyChart(); renderPaceChart(); renderRunTrends(); renderBodyCharts(); }, 150);
   });
 }
 

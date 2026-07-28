@@ -60,6 +60,20 @@ async function initDb() {
       );
       ALTER TABLE runs ADD COLUMN IF NOT EXISTS activity_type TEXT NOT NULL DEFAULT 'run';
       ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_distance_miles_check;
+      CREATE TABLE IF NOT EXISTS body_metrics (
+        id SERIAL PRIMARY KEY,
+        metric_date DATE NOT NULL UNIQUE,
+        weight_lb NUMERIC(5,1),
+        body_fat_pct NUMERIC(4,1),
+        subcutaneous_fat_pct NUMERIC(4,1),
+        visceral_fat NUMERIC(4,1),
+        bmi NUMERIC(4,1),
+        body_water_pct NUMERIC(4,1),
+        skeletal_muscle_pct NUMERIC(4,1),
+        bone_mass_lb NUMERIC(4,1),
+        bmr_kcal INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
     `);
     dbReady = true;
     console.log('Database schema ready.');
@@ -384,6 +398,187 @@ app.post('/api/import', async (req, res) => {
   } catch (err) {
     console.error('POST /api/import failed:', err.message);
     res.status(500).json({ error: 'Import failed — try again or add the workout manually.' });
+  }
+});
+
+// --- body metrics -------------------------------------------------------
+// One row per day (smart-scale weigh-ins); same-date writes update the row.
+
+function optNum(v, min, max) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < min || n > max) return null;
+  return Math.round(n * 10) / 10;
+}
+
+function parseBody(body) {
+  const date = String(body.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'date must be YYYY-MM-DD' };
+  const m = {
+    date,
+    weightLb: optNum(body.weightLb, 50, 600),
+    bodyFatPct: optNum(body.bodyFatPct, 1, 80),
+    subcutaneousFatPct: optNum(body.subcutaneousFatPct, 1, 80),
+    visceralFat: optNum(body.visceralFat, 1, 60),
+    bmi: optNum(body.bmi, 8, 80),
+    bodyWaterPct: optNum(body.bodyWaterPct, 10, 90),
+    skeletalMusclePct: optNum(body.skeletalMusclePct, 10, 90),
+    boneMassLb: optNum(body.boneMassLb, 1, 30),
+    bmrKcal: optInt(body.bmrKcal, 500, 6000),
+  };
+  if (m.weightLb === null && m.bodyFatPct === null && m.bmi === null) {
+    return { error: 'at least a weight, body fat %, or BMI is required' };
+  }
+  return m;
+}
+
+const BODY_COLUMNS = `id, to_char(metric_date, 'YYYY-MM-DD') AS date,
+  weight_lb::float AS "weightLb", body_fat_pct::float AS "bodyFatPct",
+  subcutaneous_fat_pct::float AS "subcutaneousFatPct", visceral_fat::float AS "visceralFat",
+  bmi::float AS bmi, body_water_pct::float AS "bodyWaterPct",
+  skeletal_muscle_pct::float AS "skeletalMusclePct", bone_mass_lb::float AS "boneMassLb",
+  bmr_kcal AS "bmrKcal"`;
+
+async function upsertBodyMetric(m) {
+  const { rows } = await pool.query(
+    `INSERT INTO body_metrics (metric_date, weight_lb, body_fat_pct, subcutaneous_fat_pct,
+       visceral_fat, bmi, body_water_pct, skeletal_muscle_pct, bone_mass_lb, bmr_kcal)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (metric_date) DO UPDATE SET
+       weight_lb = EXCLUDED.weight_lb, body_fat_pct = EXCLUDED.body_fat_pct,
+       subcutaneous_fat_pct = EXCLUDED.subcutaneous_fat_pct, visceral_fat = EXCLUDED.visceral_fat,
+       bmi = EXCLUDED.bmi, body_water_pct = EXCLUDED.body_water_pct,
+       skeletal_muscle_pct = EXCLUDED.skeletal_muscle_pct, bone_mass_lb = EXCLUDED.bone_mass_lb,
+       bmr_kcal = EXCLUDED.bmr_kcal
+     RETURNING ${BODY_COLUMNS}`,
+    [m.date, m.weightLb, m.bodyFatPct, m.subcutaneousFatPct, m.visceralFat, m.bmi,
+     m.bodyWaterPct, m.skeletalMusclePct, m.boneMassLb, m.bmrKcal]
+  );
+  return rows[0];
+}
+
+app.get('/api/body', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT ${BODY_COLUMNS} FROM body_metrics ORDER BY metric_date DESC`);
+    res.json({ metrics: rows });
+  } catch (err) {
+    console.error('GET /api/body failed:', err.message);
+    res.status(500).json({ error: 'Failed to load body metrics' });
+  }
+});
+
+app.post('/api/body', async (req, res) => {
+  const m = parseBody(req.body || {});
+  if (m.error) return res.status(400).json({ error: m.error });
+  try {
+    res.status(201).json({ metric: await upsertBodyMetric(m) });
+  } catch (err) {
+    console.error('POST /api/body failed:', err.message);
+    res.status(500).json({ error: 'Failed to save weigh-in' });
+  }
+});
+
+app.delete('/api/body/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad id' });
+  try {
+    const { rowCount } = await pool.query('DELETE FROM body_metrics WHERE id = $1', [id]);
+    if (!rowCount) return res.status(404).json({ error: 'Weigh-in not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE /api/body failed:', err.message);
+    res.status(500).json({ error: 'Failed to delete weigh-in' });
+  }
+});
+
+const BODY_IMPORT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['entries'],
+  properties: {
+    entries: {
+      type: 'array',
+      description: 'One entry per distinct weigh-in shown (usually one per screenshot)',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['date', 'weightLb', 'bodyFatPct', 'subcutaneousFatPct', 'visceralFat', 'bmi', 'bodyWaterPct', 'skeletalMusclePct', 'boneMassLb', 'bmrKcal'],
+        properties: {
+          date: { type: ['string', 'null'], description: 'Weigh-in date YYYY-MM-DD — use the SELECTED/highlighted date tab plus the year shown' },
+          weightLb: { type: ['number', 'null'], description: 'Weight in pounds (convert from kg if needed)' },
+          bodyFatPct: { type: ['number', 'null'] },
+          subcutaneousFatPct: { type: ['number', 'null'] },
+          visceralFat: { type: ['number', 'null'] },
+          bmi: { type: ['number', 'null'] },
+          bodyWaterPct: { type: ['number', 'null'] },
+          skeletalMusclePct: { type: ['number', 'null'] },
+          boneMassLb: { type: ['number', 'null'], description: 'Bone mass in pounds' },
+          bmrKcal: { type: ['integer', 'null'] },
+        },
+      },
+    },
+  },
+};
+
+app.post('/api/body-import', async (req, res) => {
+  if (!anthropic) {
+    return res.status(501).json({ error: 'Screenshot import is not configured — set ANTHROPIC_API_KEY on the server.' });
+  }
+  const images = Array.isArray(req.body.images) ? req.body.images.slice(0, 6) : [];
+  if (!images.length) return res.status(400).json({ error: 'No images provided' });
+  for (const img of images) {
+    if (!IMAGE_TYPES.has(img.mediaType) || typeof img.data !== 'string' || !img.data) {
+      return res.status(400).json({ error: 'Unsupported or empty image' });
+    }
+  }
+  const defaultDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.defaultDate || '')) ? req.body.defaultDate : null;
+
+  try {
+    const response = await anthropic.beta.messages.create({
+      model: 'claude-opus-5',
+      max_tokens: 2048,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { format: { type: 'json_schema', schema: BODY_IMPORT_SCHEMA } },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            ...images.map((img) => ({
+              type: 'image',
+              source: { type: 'base64', media_type: img.mediaType, data: img.data },
+            })),
+            {
+              type: 'text',
+              text: `These are smart-scale / body-composition app screenshots (VeSync or similar). Each screenshot shows ONE weigh-in — return one entry per screenshot (deduplicate if two screenshots show the same date).
+- date: the SELECTED (highlighted) date in the date tabs, combined with the year shown, as YYYY-MM-DD. Today is ${defaultDate || 'unknown'} — use it to resolve an ambiguous year, or as the date if none is visible.
+- Convert kg to lb if the app shows kg.
+- Use null for any value not visible.`,
+            },
+          ],
+        },
+      ],
+    });
+
+    if (response.stop_reason === 'refusal') {
+      return res.status(502).json({ error: 'The model declined to read these images — try different screenshots.' });
+    }
+    const textBlock = response.content.find((b) => b.type === 'text');
+    if (!textBlock) return res.status(502).json({ error: 'No data extracted from the screenshots' });
+    const parsed = JSON.parse(textBlock.text);
+
+    const saved = [];
+    const errors = [];
+    for (const entry of (parsed.entries || []).slice(0, 12)) {
+      const m = parseBody({ ...entry, date: entry.date || defaultDate });
+      if (m.error) { errors.push(m.error); continue; }
+      saved.push(await upsertBodyMetric(m));
+    }
+    if (!saved.length) return res.status(422).json({ error: `Could not read a valid weigh-in (${errors[0] || 'nothing extracted'})` });
+    res.status(201).json({ metrics: saved });
+  } catch (err) {
+    console.error('POST /api/body-import failed:', err.message);
+    res.status(500).json({ error: 'Import failed — try again or add the weigh-in manually.' });
   }
 });
 

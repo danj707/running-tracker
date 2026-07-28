@@ -945,13 +945,33 @@ function wireForms() {
 
 // ---------- screenshot import ----------
 
-function fileToBase64(file) {
+function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result).split(',')[1]);
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
-    reader.readAsDataURL(file);
+    reader.onerror = () => reject(new Error('Could not read image'));
+    reader.readAsDataURL(blob);
   });
+}
+
+// Downscale big phone screenshots before upload — faster, cheaper, still legible
+async function prepareImage(file) {
+  const MAX_EDGE = 1800;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_EDGE / Math.max(bmp.width, bmp.height));
+    if (scale === 1 && file.size < 1_500_000) {
+      return { mediaType: file.type || 'image/jpeg', data: await blobToBase64(file) };
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.85));
+    return { mediaType: 'image/jpeg', data: await blobToBase64(blob) };
+  } catch {
+    return { mediaType: file.type || 'image/jpeg', data: await blobToBase64(file) };
+  }
 }
 
 function wireImport() {
@@ -968,7 +988,7 @@ function wireImport() {
     try {
       const images = [];
       for (const f of files) {
-        images.push({ mediaType: f.type || 'image/jpeg', data: await fileToBase64(f) });
+        images.push(await prepareImage(f));
       }
       const { run } = await api('/api/import', {
         method: 'POST',

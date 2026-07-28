@@ -100,7 +100,8 @@ function isAuthed(req) {
 }
 
 const app = express();
-app.use(express.json());
+// generous limit: /api/import carries base64 screenshots in its JSON body
+app.use(express.json({ limit: '60mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/healthz', (req, res) => res.json({ ok: true, dbReady }));
@@ -306,7 +307,7 @@ const IMPORT_SCHEMA = {
   },
 };
 
-app.post('/api/import', express.json({ limit: '60mb' }), async (req, res) => {
+app.post('/api/import', async (req, res) => {
   if (!anthropic) {
     return res.status(501).json({ error: 'Screenshot import is not configured — set ANTHROPIC_API_KEY on the server.' });
   }

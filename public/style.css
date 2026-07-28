@@ -170,6 +170,20 @@ button.ghost:hover { color: var(--ink); }
 
 .form-msg { font-size: 13px; color: var(--ink-2); width: 100%; }
 
+select {
+  font: inherit; color: var(--ink); background: var(--page);
+  border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px;
+}
+select:focus { outline: 2px solid var(--series); outline-offset: 0; border-color: transparent; }
+
+.import-strip {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--grid);
+}
+.import-strip .import-label { font-size: 13px; color: var(--ink-2); }
+
+td.type-cell, th.type-col { text-align: center; font-size: 15px; width: 34px; }
+
 /* Goals */
 .goal-row { margin-bottom: 14px; }
 .goal-row .g-label { font-size: 12.5px; color: var(--ink-2); display: flex; justify-content: space-between; margin-bottom: 6px; }

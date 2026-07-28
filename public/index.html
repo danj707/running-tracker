@@ -44,16 +44,20 @@
 
     <div class="grid2">
       <section class="card">
-        <h2>Add a run</h2>
-        <div class="card-sub">Distance, time, and any notes</div>
+        <h2>Add an activity</h2>
+        <div class="card-sub">Log it by hand, or import screenshots below</div>
         <form class="run-form" id="addForm">
+          <div class="field">
+            <label for="addType">Type</label>
+            <select id="addType"></select>
+          </div>
           <div class="field">
             <label for="addDate">Date</label>
             <input type="date" id="addDate" required>
           </div>
           <div class="field">
             <label for="addMiles">Miles</label>
-            <input type="number" id="addMiles" class="narrow" step="0.01" min="0.01" max="300" required>
+            <input type="number" id="addMiles" class="narrow" step="0.01" min="0" max="300">
           </div>
           <div class="field">
             <label for="addH">Time (h : m : s)</label>
@@ -79,9 +83,15 @@
             <label>How did it feel?</label>
             <div class="mood-picker" id="addMood"></div>
           </div>
-          <button class="primary" type="submit">Add run</button>
+          <button class="primary" type="submit">Add activity</button>
           <div class="form-msg" id="addMsg"></div>
         </form>
+        <div class="import-strip">
+          <span class="import-label">📸 Or let the screenshots do the typing:</span>
+          <button class="ghost" id="importBtn" type="button">Import from screenshots</button>
+          <input type="file" id="importFiles" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+          <div class="form-msg" id="importMsg"></div>
+        </div>
       </section>
 
       <section class="card">
@@ -100,18 +110,19 @@
 
     <section class="card">
       <h2>Pace trend</h2>
-      <div class="card-sub">Per-run average pace — faster is up</div>
+      <div class="card-sub">Average pace per run (runs only) — faster is up</div>
       <div class="chart-wrap" id="paceChart"></div>
     </section>
 
     <section class="card">
-      <h2>Run log</h2>
+      <h2>Activity log</h2>
       <div class="card-sub" id="logSub"></div>
       <div style="overflow-x:auto">
         <table id="runTable">
           <thead>
             <tr>
               <th></th>
+              <th class="type-col"></th>
               <th>Date</th>
               <th class="num">Miles</th>
               <th class="num">Time</th>
@@ -158,12 +169,16 @@
   <h2>Edit run</h2>
   <form id="editForm" method="dialog">
     <div class="field">
+      <label for="editType">Type</label>
+      <select id="editType"></select>
+    </div>
+    <div class="field">
       <label for="editDate">Date</label>
       <input type="date" id="editDate" required>
     </div>
     <div class="field">
       <label for="editMiles">Miles</label>
-      <input type="number" id="editMiles" step="0.01" min="0.01" max="300" required>
+      <input type="number" id="editMiles" step="0.01" min="0" max="300">
     </div>
     <div class="field">
       <label for="editH">Time (h : m : s)</label>

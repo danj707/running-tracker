@@ -15,7 +15,22 @@ const RANGES = [
 const $ = (sel) => document.querySelector(sel);
 
 const MOODS = { 1: ['😖', 'Rough'], 2: ['😕', 'Meh'], 3: ['😐', 'OK'], 4: ['🙂', 'Good'], 5: ['🤩', 'Great'] };
+const ACTIVITIES = {
+  run: ['🏃', 'Run'], walk: ['🚶', 'Walk'], hike: ['🥾', 'Hike'],
+  ride: ['🚴', 'Ride'], workout: ['💪', 'Workout'], other: ['✨', 'Other'],
+};
+const DISTANCE_TYPES = new Set(['run', 'walk', 'hike', 'ride']);
+const actInfo = (t) => ACTIVITIES[t] || ACTIVITIES.other;
 const expandedRuns = new Set();
+
+function fillTypeSelect(sel) {
+  for (const [val, [emoji, label]] of Object.entries(ACTIVITIES)) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = `${emoji} ${label}`;
+    sel.appendChild(opt);
+  }
+}
 
 // mood picker: 5 emoji toggle buttons writing to a data attribute
 function initMoodPicker(el) {
@@ -244,7 +259,8 @@ function sumMiles(runs) {
 function renderTiles() {
   const tiles = $('#tiles');
   tiles.textContent = '';
-  const runs = filteredRuns();
+  const all = filteredRuns();
+  const runsOnly = all.filter((r) => r.type === 'run' || !r.type);
   const rangeLabel = RANGES.find((r) => r.key === state.range).label;
 
   const thisWeekStart = ymd(weekStart(new Date()));
@@ -257,17 +273,18 @@ function renderTiles() {
     `${diff >= 0 ? '+' : '−'}${fmtMiles(Math.abs(diff))} mi vs last week`, diff > 0
   ));
 
-  const total = sumMiles(runs);
-  tiles.appendChild(tile(`Miles · ${rangeLabel}`, fmtMiles(total), 'mi', `${runs.length} run${runs.length === 1 ? '' : 's'}`));
+  const total = sumMiles(all);
+  tiles.appendChild(tile(`Miles · ${rangeLabel}`, fmtMiles(total), 'mi', `${all.length} activit${all.length === 1 ? 'y' : 'ies'}`));
 
-  const totalSec = runs.reduce((a, r) => a + r.seconds, 0);
-  tiles.appendChild(tile(`Avg pace · ${rangeLabel}`, total > 0 ? fmtPace(totalSec / total) : '—', total > 0 ? '/mi' : '', total > 0 ? fmtDur(totalSec) + ' total' : ''));
+  const runMiles = sumMiles(runsOnly);
+  const runSec = runsOnly.reduce((a, r) => a + r.seconds, 0);
+  tiles.appendChild(tile(`Avg run pace · ${rangeLabel}`, runMiles > 0 ? fmtPace(runSec / runMiles) : '—', runMiles > 0 ? '/mi' : '', runMiles > 0 ? `${runsOnly.length} run${runsOnly.length === 1 ? '' : 's'}` : ''));
 
-  const longest = runs.reduce((best, r) => (best === null || r.miles > best.miles ? r : best), null);
+  const longest = all.reduce((best, r) => (best === null || r.miles > best.miles ? r : best), null);
   tiles.appendChild(tile(
     `Longest · ${rangeLabel}`,
-    longest ? fmtMiles(longest.miles) : '—', longest ? 'mi' : '',
-    longest ? fmtTable(longest.date) : ''
+    longest && longest.miles > 0 ? fmtMiles(longest.miles) : '—', longest && longest.miles > 0 ? 'mi' : '',
+    longest && longest.miles > 0 ? `${actInfo(longest.type)[1]} · ${fmtTable(longest.date)}` : ''
   ));
 }
 
@@ -510,7 +527,7 @@ function renderWeeklyChart() {
 function renderPaceChart() {
   const wrap = $('#paceChart');
   wrap.textContent = '';
-  const runs = filteredRuns().slice().reverse(); // ascending by date
+  const runs = filteredRuns().filter((r) => (r.type === 'run' || !r.type) && r.miles > 0).slice().reverse(); // ascending by date
   if (runs.length < 2) {
     const p = document.createElement('div');
     p.className = 'empty-note';
@@ -632,11 +649,17 @@ function renderTable() {
     chev.textContent = expanded ? '▼' : '▶';
     tr.appendChild(chev);
 
+    const typeCell = document.createElement('td');
+    typeCell.className = 'type-cell';
+    typeCell.textContent = actInfo(r.type)[0];
+    typeCell.title = actInfo(r.type)[1];
+    tr.appendChild(typeCell);
+
     const cells = [
       [fmtTable(r.date), ''],
-      [fmtMiles(r.miles), 'num'],
+      [r.miles > 0 ? fmtMiles(r.miles) : '—', 'num'],
       [fmtDur(r.seconds), 'num'],
-      [fmtPace(r.seconds / r.miles), 'num'],
+      [r.miles > 0 ? fmtPace(r.seconds / r.miles) : '—', 'num'],
       [r.avgHr ? String(r.avgHr) : '—', 'num'],
       [r.mood ? MOODS[r.mood][0] : '—', 'mood-cell'],
     ];
@@ -667,14 +690,15 @@ function buildDetailRow(r) {
   const tr = document.createElement('tr');
   tr.className = 'detail-row';
   const td = document.createElement('td');
-  td.colSpan = 7;
+  td.colSpan = 8;
 
   const grid = document.createElement('div');
   grid.className = 'detail-grid';
   const items = [
-    ['Distance', `${fmtMiles(r.miles)} mi`],
+    ['Activity', `${actInfo(r.type)[0]} ${actInfo(r.type)[1]}`],
+    ['Distance', r.miles > 0 ? `${fmtMiles(r.miles)} mi` : '—'],
     ['Time', fmtDur(r.seconds)],
-    ['Pace', `${fmtPace(r.seconds / r.miles)} /mi`],
+    ['Pace', r.miles > 0 ? `${fmtPace(r.seconds / r.miles)} /mi` : '—'],
     ['Avg HR', r.avgHr ? `${r.avgHr} bpm` : '—'],
     ['Max HR', r.maxHr ? `${r.maxHr} bpm` : '—'],
     ['Felt', r.mood ? `${MOODS[r.mood][0]} ${MOODS[r.mood][1]}` : 'Not rated'],
@@ -799,6 +823,9 @@ function readDuration(prefix) {
 function wireForms() {
   initMoodPicker($('#addMood'));
   initMoodPicker($('#editMood'));
+  fillTypeSelect($('#addType'));
+  fillTypeSelect($('#editType'));
+  wireImport();
 
   $('#loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -820,6 +847,9 @@ function wireForms() {
     e.preventDefault();
     const msg = $('#addMsg');
     msg.textContent = '';
+    const type = $('#addType').value;
+    const miles = Number($('#addMiles').value || 0);
+    if (DISTANCE_TYPES.has(type) && miles <= 0) { msg.textContent = `Miles is required for a ${actInfo(type)[1].toLowerCase()}.`; return; }
     const seconds = readDuration('add');
     if (seconds <= 0) { msg.textContent = 'Duration must be more than zero.'; return; }
     try {
@@ -827,7 +857,8 @@ function wireForms() {
         method: 'POST',
         body: JSON.stringify({
           date: $('#addDate').value,
-          miles: Number($('#addMiles').value),
+          type,
+          miles,
           seconds,
           notes: $('#addNotes').value.trim(),
           avgHr: $('#addAvgHr').value || null,
@@ -840,8 +871,8 @@ function wireForms() {
       for (const id of ['addMiles', 'addH', 'addM', 'addS', 'addNotes', 'addAvgHr', 'addMaxHr']) $(`#${id}`).value = '';
       $('#addH').value = '0'; $('#addS').value = '0';
       setMoodPicker($('#addMood'), null);
-      msg.textContent = 'Run added ✓';
-      setTimeout(() => { if (msg.textContent === 'Run added ✓') msg.textContent = ''; }, 2500);
+      msg.textContent = 'Added ✓';
+      setTimeout(() => { if (msg.textContent === 'Added ✓') msg.textContent = ''; }, 2500);
       renderAll();
     } catch (err) {
       msg.textContent = err.message;
@@ -859,7 +890,8 @@ function wireForms() {
         method: 'PUT',
         body: JSON.stringify({
           date: $('#editDate').value,
-          miles: Number($('#editMiles').value),
+          type: $('#editType').value,
+          miles: Number($('#editMiles').value || 0),
           seconds: readDuration('edit'),
           notes: $('#editNotes').value.trim(),
           avgHr: $('#editAvgHr').value || null,
@@ -911,11 +943,56 @@ function wireForms() {
   });
 }
 
+// ---------- screenshot import ----------
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]);
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function wireImport() {
+  const btn = $('#importBtn');
+  const input = $('#importFiles');
+  const msg = $('#importMsg');
+  btn.addEventListener('click', () => input.click());
+  input.addEventListener('change', async () => {
+    const files = Array.from(input.files || []).slice(0, 6);
+    input.value = '';
+    if (!files.length) return;
+    btn.disabled = true;
+    msg.textContent = `Reading ${files.length} screenshot${files.length === 1 ? '' : 's'}… this takes ~15 seconds`;
+    try {
+      const images = [];
+      for (const f of files) {
+        images.push({ mediaType: f.type || 'image/jpeg', data: await fileToBase64(f) });
+      }
+      const { run } = await api('/api/import', {
+        method: 'POST',
+        body: JSON.stringify({ images, defaultDate: ymd(new Date()) }),
+      });
+      state.runs.push(run);
+      state.runs.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
+      expandedRuns.add(run.id);
+      renderAll();
+      const what = `${actInfo(run.type)[1].toLowerCase()}${run.miles > 0 ? ` · ${fmtMiles(run.miles)} mi` : ''}`;
+      msg.textContent = `Imported: ${what} on ${fmtTable(run.date)} ✓ — check the expanded row below and edit anything I misread.`;
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+    btn.disabled = false;
+  });
+}
+
 function openEdit(r) {
   const d = $('#editDialog');
   d.dataset.runId = String(r.id);
+  $('#editType').value = r.type || 'run';
   $('#editDate').value = r.date;
-  $('#editMiles').value = r.miles;
+  $('#editMiles').value = r.miles > 0 ? r.miles : '';
   $('#editH').value = String(Math.floor(r.seconds / 3600));
   $('#editM').value = String(Math.floor((r.seconds % 3600) / 60));
   $('#editS').value = String(r.seconds % 60);

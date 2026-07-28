@@ -2,6 +2,12 @@ const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
 const { Pool } = require('pg');
+const Anthropic = require('@anthropic-ai/sdk');
+
+const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
+if (!anthropic) {
+  console.warn('ANTHROPIC_API_KEY is not set — screenshot import is disabled.');
+}
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -52,6 +58,8 @@ async function initDb() {
         data BYTEA NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      ALTER TABLE runs ADD COLUMN IF NOT EXISTS activity_type TEXT NOT NULL DEFAULT 'run';
+      ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_distance_miles_check;
     `);
     dbReady = true;
     console.log('Database schema ready.');
@@ -137,21 +145,26 @@ function optInt(v, min, max) {
   return n;
 }
 
+const ACTIVITY_TYPES = new Set(['run', 'walk', 'hike', 'ride', 'workout', 'other']);
+const DISTANCE_TYPES = new Set(['run', 'walk', 'hike', 'ride']);
+
 function parseRun(body) {
   const date = String(body.date || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'date must be YYYY-MM-DD' };
-  const miles = Number(body.miles);
-  if (!Number.isFinite(miles) || miles <= 0 || miles > 300) return { error: 'miles must be a positive number' };
+  const type = ACTIVITY_TYPES.has(body.type) ? body.type : 'run';
+  const miles = Number(body.miles || 0);
+  if (!Number.isFinite(miles) || miles < 0 || miles > 300) return { error: 'miles must be a non-negative number' };
+  if (DISTANCE_TYPES.has(type) && miles <= 0) return { error: `miles is required for a ${type}` };
   const seconds = Math.round(Number(body.seconds));
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 48 * 3600) return { error: 'duration must be positive' };
   const notes = String(body.notes || '').slice(0, 2000);
   const avgHr = optInt(body.avgHr, 30, 250);
   const maxHr = optInt(body.maxHr, 30, 250);
   const mood = optInt(body.mood, 1, 5);
-  return { date, miles, seconds, notes, avgHr, maxHr, mood };
+  return { date, type, miles, seconds, notes, avgHr, maxHr, mood };
 }
 
-const RUN_COLUMNS = `id, to_char(run_date, 'YYYY-MM-DD') AS date,
+const RUN_COLUMNS = `id, to_char(run_date, 'YYYY-MM-DD') AS date, activity_type AS type,
   distance_miles::float AS miles, duration_seconds AS seconds, notes,
   avg_hr AS "avgHr", max_hr AS "maxHr", mood`;
 
@@ -228,9 +241,9 @@ app.post('/api/runs', async (req, res) => {
   if (run.error) return res.status(400).json({ error: run.error });
   try {
     const { rows } = await pool.query(
-      `INSERT INTO runs (run_date, distance_miles, duration_seconds, notes, avg_hr, max_hr, mood)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ${RUN_COLUMNS}`,
-      [run.date, run.miles, run.seconds, run.notes, run.avgHr, run.maxHr, run.mood]
+      `INSERT INTO runs (run_date, activity_type, distance_miles, duration_seconds, notes, avg_hr, max_hr, mood)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${RUN_COLUMNS}`,
+      [run.date, run.type, run.miles, run.seconds, run.notes, run.avgHr, run.maxHr, run.mood]
     );
     res.status(201).json({ run: rows[0] });
   } catch (err) {
@@ -246,10 +259,10 @@ app.put('/api/runs/:id', async (req, res) => {
   if (run.error) return res.status(400).json({ error: run.error });
   try {
     const { rows } = await pool.query(
-      `UPDATE runs SET run_date = $1, distance_miles = $2, duration_seconds = $3, notes = $4,
-         avg_hr = $5, max_hr = $6, mood = $7
-       WHERE id = $8 RETURNING ${RUN_COLUMNS}`,
-      [run.date, run.miles, run.seconds, run.notes, run.avgHr, run.maxHr, run.mood, id]
+      `UPDATE runs SET run_date = $1, activity_type = $2, distance_miles = $3, duration_seconds = $4,
+         notes = $5, avg_hr = $6, max_hr = $7, mood = $8
+       WHERE id = $9 RETURNING ${RUN_COLUMNS}`,
+      [run.date, run.type, run.miles, run.seconds, run.notes, run.avgHr, run.maxHr, run.mood, id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Run not found' });
     res.json({ run: rows[0] });
@@ -269,6 +282,107 @@ app.delete('/api/runs/:id', async (req, res) => {
   } catch (err) {
     console.error('DELETE /api/runs failed:', err.message);
     res.status(500).json({ error: 'Failed to delete run' });
+  }
+});
+
+// --- screenshot import -------------------------------------------------
+// The client sends 1-6 screenshots of ONE workout; Claude extracts the
+// numbers, we create the activity and attach the screenshots to it.
+
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+const IMPORT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['activityType', 'date', 'miles', 'seconds', 'avgHr', 'maxHr', 'notes'],
+  properties: {
+    activityType: { type: 'string', enum: ['run', 'walk', 'hike', 'ride', 'workout', 'other'] },
+    date: { type: ['string', 'null'], description: 'Workout date as YYYY-MM-DD if visible, else null' },
+    miles: { type: ['number', 'null'], description: 'Total distance in miles (convert from km if needed); null if not a distance activity' },
+    seconds: { type: ['integer', 'null'], description: 'Total workout duration in seconds' },
+    avgHr: { type: ['integer', 'null'] },
+    maxHr: { type: ['integer', 'null'] },
+    notes: { type: 'string', description: 'One or two sentences: interval structure, cadence, elevation gain, calories, HR zone split — whatever is visible' },
+  },
+};
+
+app.post('/api/import', express.json({ limit: '60mb' }), async (req, res) => {
+  if (!anthropic) {
+    return res.status(501).json({ error: 'Screenshot import is not configured — set ANTHROPIC_API_KEY on the server.' });
+  }
+  const images = Array.isArray(req.body.images) ? req.body.images.slice(0, 6) : [];
+  if (!images.length) return res.status(400).json({ error: 'No images provided' });
+  for (const img of images) {
+    if (!IMAGE_TYPES.has(img.mediaType) || typeof img.data !== 'string' || !img.data) {
+      return res.status(400).json({ error: 'Unsupported or empty image' });
+    }
+  }
+  const defaultDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.defaultDate || '')) ? req.body.defaultDate : null;
+
+  try {
+    const response = await anthropic.beta.messages.create({
+      model: 'claude-opus-5',
+      max_tokens: 2048,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { format: { type: 'json_schema', schema: IMPORT_SCHEMA } },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            ...images.map((img) => ({
+              type: 'image',
+              source: { type: 'base64', media_type: img.mediaType, data: img.data },
+            })),
+            {
+              type: 'text',
+              text: `These fitness-app screenshots (Samsung Health, Strava, or similar) all describe ONE workout. Extract its data.
+- miles: total distance in miles (convert km to miles if the app shows km); null for non-distance activities like strength workouts.
+- seconds: total workout duration in seconds.
+- date: the workout date as YYYY-MM-DD only if a date is visible in the screenshots, else null. Today is ${defaultDate || 'unknown'}.
+- notes: a compact 1-2 sentence summary of what's visible: interval structure (e.g. "1:00/1:30 ×8"), cadence, elevation gain, calories, HR zone split, location.`,
+            },
+          ],
+        },
+      ],
+    });
+
+    if (response.stop_reason === 'refusal') {
+      return res.status(502).json({ error: 'The model declined to read these images — try different screenshots.' });
+    }
+    const textBlock = response.content.find((b) => b.type === 'text');
+    if (!textBlock) return res.status(502).json({ error: 'No data extracted from the screenshots' });
+    const parsed = JSON.parse(textBlock.text);
+
+    const run = parseRun({
+      date: parsed.date || defaultDate,
+      type: parsed.activityType,
+      miles: parsed.miles ?? 0,
+      seconds: parsed.seconds,
+      notes: String(parsed.notes || '').trim(),
+      avgHr: parsed.avgHr,
+      maxHr: parsed.maxHr,
+    });
+    if (run.error) return res.status(422).json({ error: `Could not read a valid workout from the screenshots (${run.error})` });
+
+    const { rows } = await pool.query(
+      `INSERT INTO runs (run_date, activity_type, distance_miles, duration_seconds, notes, avg_hr, max_hr, mood)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${RUN_COLUMNS}`,
+      [run.date, run.type, run.miles, run.seconds, run.notes, run.avgHr, run.maxHr, null]
+    );
+    const created = rows[0];
+    const photoIds = [];
+    for (const img of images) {
+      const { rows: p } = await pool.query(
+        'INSERT INTO run_photos (run_id, content_type, data) VALUES ($1, $2, $3) RETURNING id',
+        [created.id, img.mediaType, Buffer.from(img.data, 'base64')]
+      );
+      photoIds.push(p[0].id);
+    }
+    res.status(201).json({ run: { ...created, photoIds } });
+  } catch (err) {
+    console.error('POST /api/import failed:', err.message);
+    res.status(500).json({ error: 'Import failed — try again or add the workout manually.' });
   }
 });
 

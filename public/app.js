@@ -116,10 +116,26 @@ function showLogin() {
   $('#loginPassword').focus();
 }
 
+const TAGLINES = [
+  'The slow jog IS the workout. 🐢',
+  'Rep 6 should look like rep 1. 😤',
+  'Easy is the win condition. 🎯',
+  'Bank it as comfort, not speed. 🏦',
+  'Pick the feet up quicker, not farther. 👟',
+  'The talk test never lies. 🗣️',
+  'Slow is smooth, smooth is fast. 🌊',
+  'Run the mile you’re in. 🛣️',
+  'Zone 3 is where the magic lives. 💙',
+  'Every easy run is a vote for race day. 🗳️',
+];
+
 function showApp(authRequired) {
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
   $('#logoutBtn').classList.toggle('hidden', !authRequired);
+  const now = new Date();
+  const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
+  $('#tagline').textContent = TAGLINES[dayOfYear % TAGLINES.length];
 }
 
 async function init() {

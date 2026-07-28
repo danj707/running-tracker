@@ -36,10 +36,43 @@
 
 body {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  background: var(--page);
   color: var(--ink);
   font-size: 15px;
   line-height: 1.45;
+  /* dawn-run glow: cool horizon left, warm sunrise right */
+  background:
+    radial-gradient(1100px 480px at 88% -120px, var(--glow-warm), transparent 65%),
+    radial-gradient(900px 420px at 8% -100px, var(--glow-cool), transparent 65%),
+    var(--page);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+/* GPS-breadcrumb route line drifting behind everything */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: var(--route-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800'%3E%3Cpath d='M -60 660 C 180 560, 240 740, 430 640 S 640 420, 810 500 S 1020 330, 1130 220 S 1260 60, 1300 20' fill='none' stroke='%232a78d6' stroke-width='7' stroke-linecap='round' stroke-dasharray='1 22'/%3E%3Ccircle cx='-20' cy='648' r='11' fill='%23eb6834'/%3E%3Ccircle cx='1128' cy='222' r='11' fill='%232a78d6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center 30%;
+  background-size: cover;
+}
+
+:root {
+  --glow-warm: rgba(235, 104, 52, 0.16);
+  --glow-cool: rgba(42, 120, 214, 0.13);
+  --route-opacity: 0.07;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --glow-warm: rgba(217, 89, 38, 0.2);
+    --glow-cool: rgba(57, 135, 229, 0.16);
+    --route-opacity: 0.1;
+  }
 }
 
 .hidden { display: none !important; }
@@ -56,13 +89,21 @@ main {
 header {
   max-width: 980px;
   margin: 0 auto;
-  padding: 28px 20px 20px;
+  padding: 30px 20px 22px;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
 }
-header h1 { font-size: 22px; font-weight: 650; }
-header .sub { color: var(--muted); font-size: 13px; flex: 1; }
+.title-block { flex: 1; min-width: 0; }
+header h1 { font-size: 26px; font-weight: 750; letter-spacing: -0.02em; }
+header h1 .grad {
+  background: linear-gradient(90deg, var(--series), #eb6834 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.tagline { color: var(--ink-2); font-size: 13.5px; margin-top: 2px; }
+header .sub { color: var(--muted); font-size: 13px; }
 
 .card {
   background: var(--surface);

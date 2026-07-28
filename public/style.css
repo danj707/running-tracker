@@ -193,6 +193,16 @@ tr.detail-row > td {
 .detail-grid .d-item .d-value { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .detail-notes { font-size: 13.5px; color: var(--ink-2); margin-bottom: 12px; max-width: 70ch; }
 .detail-notes a { color: var(--series); }
+.photo-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.photo-thumb-wrap { position: relative; }
+.photo-thumb { height: 96px; max-width: 160px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); display: block; }
+.photo-del {
+  position: absolute; top: -7px; right: -7px; width: 20px; height: 20px;
+  border-radius: 50%; border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink-2); font-size: 13px; line-height: 1; cursor: pointer; padding: 0;
+}
+.photo-del:hover { color: var(--ink); }
+
 .row-actions { display: flex; gap: 6px; }
 .row-actions button {
   appearance: none; font-size: 12px; font-family: inherit; background: none;

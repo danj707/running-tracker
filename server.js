@@ -45,6 +45,13 @@ async function initDb() {
       ALTER TABLE runs ADD COLUMN IF NOT EXISTS avg_hr INTEGER;
       ALTER TABLE runs ADD COLUMN IF NOT EXISTS max_hr INTEGER;
       ALTER TABLE runs ADD COLUMN IF NOT EXISTS mood SMALLINT;
+      CREATE TABLE IF NOT EXISTS run_photos (
+        id SERIAL PRIMARY KEY,
+        run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        content_type TEXT NOT NULL,
+        data BYTEA NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
     `);
     dbReady = true;
     console.log('Database schema ready.');
@@ -151,10 +158,68 @@ const RUN_COLUMNS = `id, to_char(run_date, 'YYYY-MM-DD') AS date,
 app.get('/api/runs', async (req, res) => {
   try {
     const { rows } = await pool.query(`SELECT ${RUN_COLUMNS} FROM runs ORDER BY run_date DESC, id DESC`);
-    res.json({ runs: rows });
+    const { rows: photos } = await pool.query('SELECT id, run_id FROM run_photos ORDER BY id');
+    const byRun = new Map();
+    for (const p of photos) {
+      if (!byRun.has(p.run_id)) byRun.set(p.run_id, []);
+      byRun.get(p.run_id).push(p.id);
+    }
+    res.json({ runs: rows.map((r) => ({ ...r, photoIds: byRun.get(r.id) || [] })) });
   } catch (err) {
     console.error('GET /api/runs failed:', err.message);
     res.status(500).json({ error: 'Failed to load runs' });
+  }
+});
+
+// --- photos (screenshots attached to a run) ----------------------------
+
+const PHOTO_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic']);
+
+app.post('/api/runs/:id/photos', express.raw({ type: 'image/*', limit: '15mb' }), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad id' });
+  const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (!PHOTO_TYPES.has(type)) return res.status(400).json({ error: 'Unsupported image type' });
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Empty upload' });
+  try {
+    const { rows: exists } = await pool.query('SELECT 1 FROM runs WHERE id = $1', [id]);
+    if (!exists.length) return res.status(404).json({ error: 'Run not found' });
+    const { rows } = await pool.query(
+      'INSERT INTO run_photos (run_id, content_type, data) VALUES ($1, $2, $3) RETURNING id',
+      [id, type, req.body]
+    );
+    res.status(201).json({ photoId: rows[0].id });
+  } catch (err) {
+    console.error('POST photo failed:', err.message);
+    res.status(500).json({ error: 'Failed to save photo' });
+  }
+});
+
+app.get('/api/photos/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad id' });
+  try {
+    const { rows } = await pool.query('SELECT content_type, data FROM run_photos WHERE id = $1', [id]);
+    if (!rows.length) return res.status(404).json({ error: 'Photo not found' });
+    res.set('Content-Type', rows[0].content_type);
+    res.set('Cache-Control', 'private, max-age=86400');
+    res.send(rows[0].data);
+  } catch (err) {
+    console.error('GET photo failed:', err.message);
+    res.status(500).json({ error: 'Failed to load photo' });
+  }
+});
+
+app.delete('/api/photos/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad id' });
+  try {
+    const { rowCount } = await pool.query('DELETE FROM run_photos WHERE id = $1', [id]);
+    if (!rowCount) return res.status(404).json({ error: 'Photo not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE photo failed:', err.message);
+    res.status(500).json({ error: 'Failed to delete photo' });
   }
 });
 

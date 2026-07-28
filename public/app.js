@@ -684,6 +684,40 @@ function buildDetailRow(r) {
     td.appendChild(notes);
   }
 
+  // screenshots
+  const strip = document.createElement('div');
+  strip.className = 'photo-strip';
+  for (const pid of r.photoIds || []) {
+    const wrap = document.createElement('div');
+    wrap.className = 'photo-thumb-wrap';
+    const a = document.createElement('a');
+    a.href = `/api/photos/${pid}`;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    const img = document.createElement('img');
+    img.src = `/api/photos/${pid}`;
+    img.loading = 'lazy';
+    img.alt = 'Run screenshot';
+    img.className = 'photo-thumb';
+    a.appendChild(img);
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'photo-del';
+    x.textContent = '×';
+    x.title = 'Remove screenshot';
+    x.addEventListener('click', async () => {
+      if (!confirm('Remove this screenshot?')) return;
+      try {
+        await api(`/api/photos/${pid}`, { method: 'DELETE' });
+        r.photoIds = r.photoIds.filter((p) => p !== pid);
+        renderTable();
+      } catch (err) { alert(err.message); }
+    });
+    wrap.append(a, x);
+    strip.appendChild(wrap);
+  }
+  td.appendChild(strip);
+
   const actions = document.createElement('div');
   actions.className = 'row-actions';
   const edit = document.createElement('button');
@@ -702,7 +736,35 @@ function buildDetailRow(r) {
       renderAll();
     } catch (err) { alert(err.message); }
   });
-  actions.append(edit, del);
+  const addPhoto = document.createElement('button');
+  addPhoto.type = 'button';
+  addPhoto.textContent = '📷 Add screenshots';
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/*';
+  fileInput.multiple = true;
+  fileInput.hidden = true;
+  addPhoto.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const files = Array.from(fileInput.files || []);
+    if (!files.length) return;
+    addPhoto.disabled = true;
+    addPhoto.textContent = 'Uploading…';
+    try {
+      for (const file of files) {
+        const res = await fetch(`/api/runs/${r.id}/photos`, {
+          method: 'POST',
+          headers: { 'Content-Type': file.type || 'image/jpeg' },
+          body: file,
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || 'Upload failed');
+        r.photoIds = [...(r.photoIds || []), body.photoId];
+      }
+    } catch (err) { alert(err.message); }
+    renderTable();
+  });
+  actions.append(edit, del, addPhoto, fileInput);
   td.appendChild(actions);
 
   tr.appendChild(td);
@@ -757,7 +819,7 @@ function wireForms() {
           mood: getMood($('#addMood')),
         }),
       });
-      state.runs.push(run);
+      state.runs.push({ ...run, photoIds: [] });
       state.runs.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
       for (const id of ['addMiles', 'addH', 'addM', 'addS', 'addNotes', 'addAvgHr', 'addMaxHr']) $(`#${id}`).value = '';
       $('#addH').value = '0'; $('#addS').value = '0';
@@ -790,7 +852,7 @@ function wireForms() {
         }),
       });
       const i = state.runs.findIndex((r) => r.id === id);
-      if (i >= 0) state.runs[i] = run;
+      if (i >= 0) state.runs[i] = { ...run, photoIds: state.runs[i].photoIds || [] };
       state.runs.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
       editDialog.close();
       renderAll();

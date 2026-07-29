@@ -60,6 +60,7 @@ async function initDb() {
       );
       ALTER TABLE runs ADD COLUMN IF NOT EXISTS activity_type TEXT NOT NULL DEFAULT 'run';
       ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_distance_miles_check;
+      ALTER TABLE runs ADD COLUMN IF NOT EXISTS map_photo_id INTEGER REFERENCES run_photos(id) ON DELETE SET NULL;
       CREATE TABLE IF NOT EXISTS body_metrics (
         id SERIAL PRIMARY KEY,
         metric_date DATE NOT NULL UNIQUE,
@@ -181,7 +182,7 @@ function parseRun(body) {
 
 const RUN_COLUMNS = `id, to_char(run_date, 'YYYY-MM-DD') AS date, activity_type AS type,
   distance_miles::float AS miles, duration_seconds AS seconds, notes,
-  avg_hr AS "avgHr", max_hr AS "maxHr", mood`;
+  avg_hr AS "avgHr", max_hr AS "maxHr", mood, map_photo_id AS "mapPhotoId"`;
 
 app.get('/api/runs', async (req, res) => {
   try {
@@ -220,6 +221,25 @@ app.post('/api/runs/:id/photos', express.raw({ type: 'image/*', limit: '15mb' })
   } catch (err) {
     console.error('POST photo failed:', err.message);
     res.status(500).json({ error: 'Failed to save photo' });
+  }
+});
+
+// designate (or clear) one of a run's photos as its route map
+app.post('/api/runs/:id/map', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad id' });
+  const photoId = req.body && req.body.photoId != null ? Number(req.body.photoId) : null;
+  try {
+    if (photoId !== null) {
+      const { rows } = await pool.query('SELECT 1 FROM run_photos WHERE id = $1 AND run_id = $2', [photoId, id]);
+      if (!rows.length) return res.status(404).json({ error: 'Photo not found on this run' });
+    }
+    const { rowCount } = await pool.query('UPDATE runs SET map_photo_id = $1 WHERE id = $2', [photoId, id]);
+    if (!rowCount) return res.status(404).json({ error: 'Run not found' });
+    res.json({ ok: true, mapPhotoId: photoId });
+  } catch (err) {
+    console.error('POST /api/runs/:id/map failed:', err.message);
+    res.status(500).json({ error: 'Failed to set route map' });
   }
 });
 
@@ -309,9 +329,10 @@ const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif
 const IMPORT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['activityType', 'date', 'miles', 'seconds', 'avgHr', 'maxHr', 'notes'],
+  required: ['activityType', 'date', 'miles', 'seconds', 'avgHr', 'maxHr', 'notes', 'mapImageIndex'],
   properties: {
     activityType: { type: 'string', enum: ['run', 'walk', 'hike', 'ride', 'workout', 'other'] },
+    mapImageIndex: { type: ['integer', 'null'], description: '0-based index of the image that shows a route map (a GPS trace on a map), or null if none do' },
     date: { type: ['string', 'null'], description: 'Workout date as YYYY-MM-DD if visible, else null' },
     miles: { type: ['number', 'null'], description: 'Total distance in miles (convert from km if needed); null if not a distance activity' },
     seconds: { type: ['integer', 'null'], description: 'Total workout duration in seconds' },
@@ -355,7 +376,8 @@ app.post('/api/import', async (req, res) => {
 - miles: total distance in miles (convert km to miles if the app shows km); null for non-distance activities like strength workouts.
 - seconds: total workout duration in seconds.
 - date: the workout date as YYYY-MM-DD only if a date is visible in the screenshots, else null. Today is ${defaultDate || 'unknown'}.
-- notes: a compact 1-2 sentence summary of what's visible: interval structure (e.g. "1:00/1:30 ×8"), cadence, elevation gain, calories, HR zone split, location.`,
+- notes: a compact 1-2 sentence summary of what's visible: interval structure (e.g. "1:00/1:30 ×8"), cadence, elevation gain, calories, HR zone split, location.
+- mapImageIndex: the 0-based index of the image containing a route map (GPS trace drawn on a map), or null if no image shows one.`,
             },
           ],
         },
@@ -394,7 +416,13 @@ app.post('/api/import', async (req, res) => {
       );
       photoIds.push(p[0].id);
     }
-    res.status(201).json({ run: { ...created, photoIds } });
+    let mapPhotoId = null;
+    const mi = parsed.mapImageIndex;
+    if (Number.isInteger(mi) && mi >= 0 && mi < photoIds.length) {
+      mapPhotoId = photoIds[mi];
+      await pool.query('UPDATE runs SET map_photo_id = $1 WHERE id = $2', [mapPhotoId, created.id]);
+    }
+    res.status(201).json({ run: { ...created, photoIds, mapPhotoId } });
   } catch (err) {
     console.error('POST /api/import failed:', err.message);
     res.status(500).json({ error: 'Import failed — try again or add the workout manually.' });

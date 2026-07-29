@@ -1125,10 +1125,45 @@ function buildDetailRow(r) {
     td.appendChild(notes);
   }
 
-  // screenshots
+  // route map: a designated screenshot shown large, Strava-style
+  const setMap = async (photoId) => {
+    try {
+      await api(`/api/runs/${r.id}/map`, { method: 'POST', body: JSON.stringify({ photoId }) });
+      r.mapPhotoId = photoId;
+      renderTable();
+    } catch (err) { alert(err.message); }
+  };
+  if (r.mapPhotoId && (r.photoIds || []).includes(r.mapPhotoId)) {
+    const fig = document.createElement('div');
+    fig.className = 'map-figure';
+    const a = document.createElement('a');
+    a.href = `/api/photos/${r.mapPhotoId}`;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    const img = document.createElement('img');
+    img.src = `/api/photos/${r.mapPhotoId}`;
+    img.loading = 'lazy';
+    img.alt = 'Route map';
+    a.appendChild(img);
+    const cap = document.createElement('div');
+    cap.className = 'map-caption';
+    const capText = document.createElement('span');
+    capText.textContent = '🗺️ Route';
+    const unset = document.createElement('button');
+    unset.type = 'button';
+    unset.textContent = 'unset';
+    unset.title = 'Stop using this screenshot as the route map';
+    unset.addEventListener('click', () => setMap(null));
+    cap.append(capText, unset);
+    fig.append(a, cap);
+    td.appendChild(fig);
+  }
+
+  // remaining screenshots
   const strip = document.createElement('div');
   strip.className = 'photo-strip';
   for (const pid of r.photoIds || []) {
+    if (pid === r.mapPhotoId) continue;
     const wrap = document.createElement('div');
     wrap.className = 'photo-thumb-wrap';
     const a = document.createElement('a');
@@ -1151,10 +1186,17 @@ function buildDetailRow(r) {
       try {
         await api(`/api/photos/${pid}`, { method: 'DELETE' });
         r.photoIds = r.photoIds.filter((p) => p !== pid);
+        if (r.mapPhotoId === pid) r.mapPhotoId = null;
         renderTable();
       } catch (err) { alert(err.message); }
     });
-    wrap.append(a, x);
+    const mapBtn = document.createElement('button');
+    mapBtn.type = 'button';
+    mapBtn.className = 'photo-del photo-map-btn';
+    mapBtn.textContent = '🗺️';
+    mapBtn.title = 'Use as route map';
+    mapBtn.addEventListener('click', () => setMap(pid));
+    wrap.append(a, x, mapBtn);
     strip.appendChild(wrap);
   }
   td.appendChild(strip);

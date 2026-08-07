@@ -214,6 +214,10 @@ function showApp(authRequired) {
   const root = document.documentElement.style;
   root.setProperty('--bg-hue', String(hue));
   root.setProperty('--route-rotate', `${hue - ROUTE_BASE_HUE}deg`);
+  // daily running photo (1..6), rotated independently of the hue
+  const photo = (dayOfYear % 6) + 1;
+  const el = $('#bgphoto');
+  if (el) el.style.backgroundImage = `url("/bg/run${photo}.jpg")`;
 }
 
 async function init() {
@@ -1336,9 +1340,10 @@ function buildDetailRow(r) {
       const orig = coachBtn.textContent;
       coachBtn.textContent = 'Analyzing… ~15s';
       try {
-        const { coaching } = await api(`/api/runs/${r.id}/analyze`, { method: 'POST' });
+        const { coaching, detail } = await api(`/api/runs/${r.id}/analyze`, { method: 'POST' });
         r.coaching = coaching;
-        renderTable();
+        if (detail) r.detail = detail; // backfilled — pace filter now has jog splits
+        renderAll();
       } catch (err) {
         alert(err.message);
         coachBtn.textContent = orig;

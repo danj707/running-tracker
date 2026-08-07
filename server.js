@@ -586,6 +586,65 @@ const IMPORT_SCHEMA = {
   },
 };
 
+// Vision extraction shared by import and by re-analysis of stored photos.
+// `images` is [{mediaType, data(base64)}]. Returns the parsed IMPORT_SCHEMA object.
+async function extractWorkout(images, defaultDate) {
+  const response = await anthropic.beta.messages.create({
+    model: 'claude-opus-5',
+    max_tokens: 2048,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    output_config: { format: { type: 'json_schema', schema: IMPORT_SCHEMA } },
+    messages: [
+      {
+        role: 'user',
+        content: [
+          ...images.map((img) => ({
+            type: 'image',
+            source: { type: 'base64', media_type: img.mediaType, data: img.data },
+          })),
+          {
+            type: 'text',
+            text: `These fitness-app screenshots (Samsung Health or similar) all describe ONE workout. Extract its data.
+- miles: total distance in miles (convert km to miles if the app shows km); null for non-distance activities like strength workouts.
+- seconds: total workout duration in seconds.
+- date: the workout date as YYYY-MM-DD only if a date is visible in the screenshots, else null. Today is ${defaultDate || 'unknown'}.
+- notes: a compact 1-2 sentence summary of what's visible: interval structure (e.g. "1:00/1:30 ×8"), cadence, elevation gain, calories, HR zone split, location. If a subjective "how it felt" note is visible, include it.
+- mapImageIndex: the 0-based index of the image containing a route map (GPS trace drawn on a map), or null if no image shows one.
+- surface: "treadmill" if a belt speed is shown or there is no GPS map; "outdoor" if a GPS route/map is present; null if unclear.
+- cadenceSpm, elevationGainFt: from the summary if shown.
+- warmupSecPerMi: pace of the warm-up segment if the splits screen shows a distinct warm-up row.
+- reps: if a per-interval / splits screen is present (rows like Warm-up / Workout / Recovery with a Pace column), return one array entry per WORK interval in order — jogSecPerMi = that Workout row's pace in seconds per mile, walkSecPerMi = the following Recovery row's pace. Convert mm'ss" to total seconds (12'07" = 727). Do NOT include the warm-up as a rep. Null if no per-interval breakdown is visible.
+- zones: seconds spent in each HR zone from the Heart rate zones screen (convert mm:ss to seconds). Null if no zone breakdown is shown.`,
+          },
+        ],
+      },
+    ],
+  });
+  if (response.stop_reason === 'refusal') { const e = new Error('refusal'); e.refusal = true; throw e; }
+  const textBlock = response.content.find((b) => b.type === 'text');
+  if (!textBlock) throw new Error('No data extracted from the screenshots');
+  return JSON.parse(textBlock.text);
+}
+
+// Build the stored `detail` object from a parsed extraction.
+function detailFromParsed(parsed) {
+  const reps = Array.isArray(parsed.reps)
+    ? parsed.reps.filter((r) => r && (Number.isFinite(r.jogSecPerMi) || Number.isFinite(r.walkSecPerMi)))
+        .map((r, i) => ({ n: i + 1, jogSecPerMi: r.jogSecPerMi ?? null, walkSecPerMi: r.walkSecPerMi ?? null }))
+    : [];
+  const surfaceNorm = String(parsed.surface || '').toLowerCase();
+  return {
+    surface: surfaceNorm === 'treadmill' ? 'treadmill' : surfaceNorm === 'outdoor' ? 'outdoor' : null,
+    cadenceSpm: Number.isFinite(parsed.cadenceSpm) ? parsed.cadenceSpm : null,
+    elevationGainFt: Number.isFinite(parsed.elevationGainFt) ? parsed.elevationGainFt : null,
+    warmupSecPerMi: Number.isFinite(parsed.warmupSecPerMi) ? parsed.warmupSecPerMi : null,
+    reps,
+    zones: parsed.zones || null,
+  };
+}
+const detailUsable = (d) => !!d && ((Array.isArray(d.reps) && d.reps.length >= 2) || !!d.zones);
+
 app.post('/api/import', async (req, res) => {
   if (!anthropic) {
     return res.status(501).json({ error: 'Screenshot import is not configured — set ANTHROPIC_API_KEY on the server.' });
@@ -600,45 +659,13 @@ app.post('/api/import', async (req, res) => {
   const defaultDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.defaultDate || '')) ? req.body.defaultDate : null;
 
   try {
-    const response = await anthropic.beta.messages.create({
-      model: 'claude-opus-5',
-      max_tokens: 2048,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-      output_config: { format: { type: 'json_schema', schema: IMPORT_SCHEMA } },
-      messages: [
-        {
-          role: 'user',
-          content: [
-            ...images.map((img) => ({
-              type: 'image',
-              source: { type: 'base64', media_type: img.mediaType, data: img.data },
-            })),
-            {
-              type: 'text',
-              text: `These fitness-app screenshots (Samsung Health, Strava, or similar) all describe ONE workout. Extract its data.
-- miles: total distance in miles (convert km to miles if the app shows km); null for non-distance activities like strength workouts.
-- seconds: total workout duration in seconds.
-- date: the workout date as YYYY-MM-DD only if a date is visible in the screenshots, else null. Today is ${defaultDate || 'unknown'}.
-- notes: a compact 1-2 sentence summary of what's visible: interval structure (e.g. "1:00/1:30 ×8"), cadence, elevation gain, calories, HR zone split, location. If a subjective "how it felt" note is visible, include it.
-- mapImageIndex: the 0-based index of the image containing a route map (GPS trace drawn on a map), or null if no image shows one.
-- surface: "treadmill" if a belt speed is shown or there is no GPS map; "outdoor" if a GPS route/map is present; null if unclear.
-- cadenceSpm, elevationGainFt: from the summary if shown.
-- warmupSecPerMi: pace of the warm-up segment if the splits screen shows a distinct warm-up row.
-- reps: if a per-interval / splits screen is present (rows like Warm-up / Workout / Recovery with a Pace column), return one array entry per WORK interval in order — jogSecPerMi = that Workout row's pace in seconds per mile, walkSecPerMi = the following Recovery row's pace. Convert mm'ss" to total seconds (12'07" = 727). Do NOT include the warm-up as a rep. Null if no per-interval breakdown is visible.
-- zones: seconds spent in each HR zone from the Heart rate zones screen (convert mm:ss to seconds). Null if no zone breakdown is shown.`,
-            },
-          ],
-        },
-      ],
-    });
-
-    if (response.stop_reason === 'refusal') {
-      return res.status(502).json({ error: 'The model declined to read these images — try different screenshots.' });
+    let parsed;
+    try {
+      parsed = await extractWorkout(images, defaultDate);
+    } catch (err) {
+      if (err.refusal) return res.status(502).json({ error: 'The model declined to read these images — try different screenshots.' });
+      throw err;
     }
-    const textBlock = response.content.find((b) => b.type === 'text');
-    if (!textBlock) return res.status(502).json({ error: 'No data extracted from the screenshots' });
-    const parsed = JSON.parse(textBlock.text);
 
     const run = parseRun({
       date: parsed.date || defaultDate,
@@ -673,25 +700,13 @@ app.post('/api/import', async (req, res) => {
     }
 
     // capture session detail for the coaching pass
-    const reps = Array.isArray(parsed.reps)
-      ? parsed.reps.filter((r) => r && (Number.isFinite(r.jogSecPerMi) || Number.isFinite(r.walkSecPerMi)))
-          .map((r, i) => ({ n: i + 1, jogSecPerMi: r.jogSecPerMi ?? null, walkSecPerMi: r.walkSecPerMi ?? null }))
-      : [];
-    const surfaceNorm = String(parsed.surface || '').toLowerCase();
-    const detail = {
-      surface: surfaceNorm === 'treadmill' ? 'treadmill' : surfaceNorm === 'outdoor' ? 'outdoor' : null,
-      cadenceSpm: Number.isFinite(parsed.cadenceSpm) ? parsed.cadenceSpm : null,
-      elevationGainFt: Number.isFinite(parsed.elevationGainFt) ? parsed.elevationGainFt : null,
-      warmupSecPerMi: Number.isFinite(parsed.warmupSecPerMi) ? parsed.warmupSecPerMi : null,
-      reps,
-      zones: parsed.zones || null,
-    };
+    const detail = detailFromParsed(parsed);
     await pool.query('UPDATE runs SET detail = $1 WHERE id = $2', [JSON.stringify(detail), created.id]);
     created.detail = detail;
 
     // coach the interval running sessions automatically
     let coaching = null;
-    if (created.type === 'run' && (reps.length >= 2 || detail.zones)) {
+    if (created.type === 'run' && detailUsable(detail)) {
       try { coaching = await analyzeAndStore(created, detail); }
       catch (err) { console.error('auto-coaching failed:', err.message); }
     }
@@ -702,7 +717,9 @@ app.post('/api/import', async (req, res) => {
   }
 });
 
-// re-run the coaching read on an existing run (manual button)
+// re-run the coaching read on an existing run (manual button). If the run has no
+// structured detail yet (imported before that feature), re-extract it from the
+// screenshots already attached to the run, then analyze.
 app.post('/api/runs/:id/analyze', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad id' });
@@ -710,12 +727,40 @@ app.post('/api/runs/:id/analyze', async (req, res) => {
     const { rows } = await pool.query(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = $1`, [id]);
     if (!rows.length) return res.status(404).json({ error: 'Run not found' });
     const run = rows[0];
-    const detail = run.detail || null;
-    if (!detail || (!(detail.reps && detail.reps.length >= 2) && !detail.zones)) {
-      return res.status(422).json({ error: 'Not enough detail to analyze — import the interval-splits and HR-zone screenshots for this run.' });
+    let detail = run.detail || null;
+    let backfilled = false;
+
+    if (!detailUsable(detail)) {
+      // backfill from attached screenshots
+      if (!anthropic) return res.status(501).json({ error: 'Coaching analysis needs ANTHROPIC_API_KEY on the server.' });
+      const { rows: photos } = await pool.query(
+        'SELECT content_type, data FROM run_photos WHERE run_id = $1 ORDER BY id', [id]
+      );
+      if (!photos.length) {
+        return res.status(422).json({ error: 'No screenshots on this run to read. Add the interval-splits and HR-zone screenshots, then analyze.' });
+      }
+      const images = photos.slice(0, 6).map((p) => ({
+        mediaType: p.content_type,
+        data: Buffer.from(p.data).toString('base64'),
+      }));
+      let parsed;
+      try {
+        parsed = await extractWorkout(images, run.date);
+      } catch (err) {
+        if (err.refusal) return res.status(502).json({ error: 'The model declined to read these screenshots.' });
+        throw err;
+      }
+      detail = detailFromParsed(parsed);
+      await pool.query('UPDATE runs SET detail = $1 WHERE id = $2', [JSON.stringify(detail), id]);
+      run.detail = detail;
+      backfilled = true;
+    }
+
+    if (!detailUsable(detail)) {
+      return res.status(422).json({ error: 'Read the screenshots but couldn\'t find interval splits or an HR-zone breakdown. Make sure those screens are attached.' });
     }
     const coaching = await analyzeAndStore(run, detail);
-    res.json({ coaching });
+    res.json({ coaching, detail, backfilled });
   } catch (err) {
     console.error('POST /api/runs/:id/analyze failed:', err.message);
     res.status(500).json({ error: 'Analysis failed — try again.' });

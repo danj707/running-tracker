@@ -43,17 +43,35 @@ body {
   color: var(--ink);
   font-size: 15px;
   line-height: 1.45;
-  /* daily run glow: two radial washes derived from the day's hue */
-  background:
-    radial-gradient(1150px 520px at 88% -140px, var(--glow-warm), transparent 66%),
-    radial-gradient(950px 460px at 6% -110px, var(--glow-cool), transparent 66%),
-    radial-gradient(700px 500px at 50% 118%, var(--glow-foot), transparent 70%),
-    var(--page);
-  background-attachment: fixed;
+  background: var(--page);
   min-height: 100vh;
 }
 
-/* GPS-breadcrumb route line drifting behind everything; recolored per day */
+/* Daily running photo (set by JS), dimmed behind everything */
+#bgphoto {
+  position: fixed;
+  inset: 0;
+  z-index: -3;
+  pointer-events: none;
+  background-position: center 28%;
+  background-size: cover;
+  background-repeat: no-repeat;
+  opacity: var(--photo-op);
+}
+
+/* Hue-derived glow + a legibility scrim over the photo */
+#bgtint {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(1150px 520px at 88% -140px, var(--glow-warm), transparent 66%),
+    radial-gradient(950px 460px at 6% -110px, var(--glow-cool), transparent 66%),
+    linear-gradient(to bottom, var(--scrim-top), transparent 26%, transparent 62%, var(--page) 100%);
+}
+
+/* GPS-breadcrumb route line drifting behind content; recolored per day */
 body::before {
   content: "";
   position: fixed;
@@ -71,17 +89,19 @@ body::before {
 /* Hue set daily by JS (--bg-hue). Glows derive from it; warm arm is +28°. */
 :root {
   --bg-hue: 210;
-  --glow-warm: hsl(calc(var(--bg-hue) + 28) 80% 55% / 0.15);
-  --glow-cool: hsl(var(--bg-hue) 72% 52% / 0.13);
-  --glow-foot: hsl(calc(var(--bg-hue) + 28) 80% 55% / 0.06);
-  --route-opacity: 0.07;
+  --glow-warm: hsl(calc(var(--bg-hue) + 28) 80% 55% / 0.13);
+  --glow-cool: hsl(var(--bg-hue) 72% 52% / 0.11);
+  --route-opacity: 0.06;
+  --photo-op: 0.15;
+  --scrim-top: rgba(0, 0, 0, 0.06);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --glow-warm: hsl(calc(var(--bg-hue) + 28) 85% 52% / 0.22);
-    --glow-cool: hsl(var(--bg-hue) 78% 55% / 0.18);
-    --glow-foot: hsl(calc(var(--bg-hue) + 28) 85% 52% / 0.10);
-    --route-opacity: 0.11;
+    --glow-warm: hsl(calc(var(--bg-hue) + 28) 85% 52% / 0.20);
+    --glow-cool: hsl(var(--bg-hue) 78% 55% / 0.16);
+    --route-opacity: 0.10;
+    --photo-op: 0.24;
+    --scrim-top: rgba(0, 0, 0, 0.42);
   }
 }
 

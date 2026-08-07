@@ -573,7 +573,7 @@ const IMPORT_SCHEMA = {
     avgHr: { type: ['integer', 'null'] },
     maxHr: { type: ['integer', 'null'] },
     notes: { type: 'string', description: 'One or two sentences: interval structure, cadence, elevation gain, calories, HR zone split — whatever is visible' },
-    surface: { type: ['string', 'null'], enum: ['treadmill', 'outdoor', null], description: 'treadmill if a belt speed / no GPS map; outdoor if there is a GPS route/map; null if unclear' },
+    surface: { type: ['string', 'null'], description: 'Exactly "treadmill" (a belt speed shown / no GPS map), "outdoor" (a GPS route/map present), or null if unclear' },
     cadenceSpm: { type: ['integer', 'null'], description: 'Average cadence in steps per minute' },
     elevationGainFt: { type: ['number', 'null'], description: 'Elevation gain in feet' },
     warmupSecPerMi: { type: ['integer', 'null'], description: 'Warm-up pace in seconds per mile, if a distinct warm-up segment is shown' },
@@ -677,8 +677,9 @@ app.post('/api/import', async (req, res) => {
       ? parsed.reps.filter((r) => r && (Number.isFinite(r.jogSecPerMi) || Number.isFinite(r.walkSecPerMi)))
           .map((r, i) => ({ n: i + 1, jogSecPerMi: r.jogSecPerMi ?? null, walkSecPerMi: r.walkSecPerMi ?? null }))
       : [];
+    const surfaceNorm = String(parsed.surface || '').toLowerCase();
     const detail = {
-      surface: parsed.surface || null,
+      surface: surfaceNorm === 'treadmill' ? 'treadmill' : surfaceNorm === 'outdoor' ? 'outdoor' : null,
       cadenceSpm: Number.isFinite(parsed.cadenceSpm) ? parsed.cadenceSpm : null,
       elevationGainFt: Number.isFinite(parsed.elevationGainFt) ? parsed.elevationGainFt : null,
       warmupSecPerMi: Number.isFinite(parsed.warmupSecPerMi) ? parsed.warmupSecPerMi : null,

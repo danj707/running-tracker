@@ -61,6 +61,8 @@ async function initDb() {
       ALTER TABLE runs ADD COLUMN IF NOT EXISTS activity_type TEXT NOT NULL DEFAULT 'run';
       ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_distance_miles_check;
       ALTER TABLE runs ADD COLUMN IF NOT EXISTS map_photo_id INTEGER REFERENCES run_photos(id) ON DELETE SET NULL;
+      ALTER TABLE runs ADD COLUMN IF NOT EXISTS detail JSONB;
+      ALTER TABLE runs ADD COLUMN IF NOT EXISTS coaching JSONB;
       CREATE TABLE IF NOT EXISTS body_metrics (
         id SERIAL PRIMARY KEY,
         metric_date DATE NOT NULL UNIQUE,
@@ -182,7 +184,8 @@ function parseRun(body) {
 
 const RUN_COLUMNS = `id, to_char(run_date, 'YYYY-MM-DD') AS date, activity_type AS type,
   distance_miles::float AS miles, duration_seconds AS seconds, notes,
-  avg_hr AS "avgHr", max_hr AS "maxHr", mood, map_photo_id AS "mapPhotoId"`;
+  avg_hr AS "avgHr", max_hr AS "maxHr", mood, map_photo_id AS "mapPhotoId",
+  detail, coaching`;
 
 app.get('/api/runs', async (req, res) => {
   try {
@@ -326,10 +329,241 @@ app.delete('/api/runs/:id', async (req, res) => {
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
+// ===== Coaching analysis =====================================================
+// Reproduces the by-hand session-review pass. This is about EXECUTION DISCIPLINE,
+// not fitness — see docs/COACHING_CONTEXT.md. A well-run easy session ends on its
+// slowest, calmest rep; the recurring failure is the back-half surge.
+
+const COACH = {
+  // current base-building targets (directional — zone boundaries aren't gospel)
+  paceBandSecPerMi: [810, 840], // 13:30–14:00/mi prescribed belt pace
+  avgHrBand: [130, 140],
+  peakBand: [145, 152],
+  maxCeiling: 154, // "low 150s" graduation ceiling
+  z4MaxFrac: 0.10, // Zone 4+ time target under 10%; flag over 15%
+  z4FlagFrac: 0.15,
+  cadenceTarget: 125,
+  cadenceLow: 122,
+};
+
+function linregSlope(ys) {
+  const n = ys.length;
+  if (n < 2) return 0;
+  const xm = (n - 1) / 2;
+  const ym = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (i - xm) * (ys[i] - ym); den += (i - xm) ** 2; }
+  return den ? num / den : 0;
+}
+const median = (a) => {
+  if (!a.length) return null;
+  const s = [...a].sort((x, y) => x - y);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+const paceStr = (secPerMi) => {
+  if (!Number.isFinite(secPerMi) || secPerMi <= 0) return '—';
+  const s = Math.round(secPerMi);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+// Deterministic metrics + flags. Never rewards "faster".
+function computeCoaching(run, detail) {
+  const flags = [];
+  const m = {};
+  const treadmill = detail && detail.surface === 'treadmill';
+  const jog = ((detail && detail.reps) || [])
+    .map((r) => r && r.jogSecPerMi)
+    .filter((v) => Number.isFinite(v) && v > 0);
+  m.repCount = jog.length;
+
+  // pace-based checks only make sense with real GPS (outdoor)
+  if (!treadmill && jog.length >= 3) {
+    const slope = linregSlope(jog); // sec/mi per rep; negative = speeding up
+    const first = jog[0], last = jog[jog.length - 1], med = median(jog);
+    m.paceSlopeSecPerRep = Math.round(slope * 10) / 10;
+    m.lastVsFirstSec = Math.round(first - last); // + = last rep faster
+    m.lastVsMedianSec = Math.round(med - last);
+    m.lastRepSlowest = last >= Math.max(...jog) - 3;
+    const surging = slope < -5 || (first - last) > 45;
+    if (surging) {
+      flags.push({ level: 'flag', text: `Back-half surge: jog reps ramped from ${paceStr(first)} to ${paceStr(last)}/mi (${Math.round(first - last)}s/mi faster). A clean easy session ends on its slowest rep.` });
+    } else if (m.lastRepSlowest) {
+      flags.push({ level: 'good', text: `Even pacing — last rep was the slowest/calmest. This is exactly the target shape.` });
+    }
+    // vs prescription band
+    const [lo, hi] = COACH.paceBandSecPerMi;
+    const inBand = jog.filter((v) => v >= lo - 15 && v <= hi + 15).length;
+    m.repsInBand = inBand;
+    m.meanPaceSecPerMi = Math.round(jog.reduce((a, b) => a + b, 0) / jog.length);
+    if (m.meanPaceSecPerMi < lo - 30) {
+      flags.push({ level: 'flag', text: `Ran hot vs the ${paceStr(lo)}–${paceStr(hi)}/mi prescription — mean jog ${paceStr(m.meanPaceSecPerMi)}/mi, ${inBand}/${jog.length} reps in band.` });
+    }
+  } else if (treadmill) {
+    flags.push({ level: 'info', text: 'Treadmill session — GPS pace is fictional, so this read leans on HR zones and cadence.' });
+  }
+
+  // HR zone distribution
+  const z = detail && detail.zones;
+  if (z) {
+    const tot = ['z1Sec', 'z2Sec', 'z3Sec', 'z4Sec', 'z5Sec'].reduce((a, k) => a + (z[k] || 0), 0);
+    if (tot > 0) {
+      m.pctAboveZ4 = Math.round(((z.z4Sec || 0) + (z.z5Sec || 0)) / tot * 100);
+      m.pctZ5 = Math.round((z.z5Sec || 0) / tot * 100);
+      if (m.pctAboveZ4 > COACH.z4FlagFrac * 100) {
+        flags.push({ level: 'flag', text: `${m.pctAboveZ4}% of the session above Zone 3 (target under 10%). Too much time anaerobic for an easy day.` });
+      } else if (m.pctAboveZ4 <= COACH.z4MaxFrac * 100) {
+        flags.push({ level: 'good', text: `Only ${m.pctAboveZ4}% above Zone 3 — zone discipline held.` });
+      }
+    }
+  }
+
+  // avg / peak HR
+  if (run.avgHr) {
+    m.avgHr = run.avgHr;
+    if (run.avgHr >= COACH.avgHrBand[0] && run.avgHr <= COACH.avgHrBand[1]) {
+      flags.push({ level: 'good', text: `Session avg HR ${run.avgHr} — right in the 130–140 easy band.` });
+    } else if (run.avgHr > COACH.avgHrBand[1]) {
+      flags.push({ level: 'flag', text: `Session avg HR ${run.avgHr}, above the 130–140 easy band.` });
+    }
+  }
+  if (run.maxHr) m.maxHr = run.maxHr;
+
+  // cadence vs pace — overstriding is the hip-flexor mechanism
+  const cad = detail && detail.cadenceSpm;
+  if (cad) {
+    m.cadenceSpm = cad;
+    const sped = m.lastVsFirstSec > 30 || (m.paceSlopeSecPerRep != null && m.paceSlopeSecPerRep < -5);
+    if (cad < COACH.cadenceLow && sped) {
+      flags.push({ level: 'flag', text: `Cadence ${cad} spm while pace rose = overstriding (reaching, not turning over). This is the hip-flexor mechanism — pick the feet up quicker, don't lengthen the stride.` });
+    } else if (cad < COACH.cadenceLow) {
+      flags.push({ level: 'info', text: `Cadence ${cad} spm — still under the 125 target. A live lever for next time.` });
+    }
+  }
+
+  // perceived-vs-measured: subjective "easy" against the flag count
+  const subjective = String(run.notes || '').toLowerCase();
+  const saysEasy = /\beasy|felt (good|great|fine)|comfortable|no problem/.test(subjective);
+  const hardFlags = flags.filter((f) => f.level === 'flag').length;
+  if (saysEasy && hardFlags > 0) {
+    flags.push({ level: 'flag', text: `You logged it as feeling easy, but the trace shows ${hardFlags} execution issue${hardFlags === 1 ? '' : 's'}. Perceived effort runs ~15 bpm hot for you — the data is the governor, not the feel.` });
+    m.perceivedGap = true;
+  }
+
+  // advancement gate — data, not feeling
+  const gate = {};
+  gate.peaksOk = run.maxHr != null ? run.maxHr <= COACH.maxCeiling : null;
+  gate.noSurge = (!treadmill && jog.length >= 3) ? !(m.paceSlopeSecPerRep < -5 || m.lastVsFirstSec > 45) : null;
+  gate.zonesOk = m.pctAboveZ4 != null ? m.pctAboveZ4 <= COACH.z4MaxFrac * 100 : null;
+  const known = [gate.peaksOk, gate.noSurge, gate.zonesOk].filter((v) => v !== null);
+  gate.pass = known.length > 0 && known.every((v) => v === true);
+  m.gate = gate;
+
+  return { metrics: m, flags, treadmill };
+}
+
+const NARRATIVE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['verdict', 'observations', 'advancement'],
+  properties: {
+    verdict: { type: 'string', description: 'One blunt sentence: was this session executed correctly? Never praise "faster".' },
+    observations: { type: 'array', items: { type: 'string' }, description: '2-4 short execution-focused observations, most important first' },
+    advancement: { type: 'string', description: 'The advancement call, stating the criterion explicitly (talk test held + peaks low 150s + no negative pace slope + Z4 under 10%).' },
+  },
+};
+
+const COACH_SYSTEM = `You are Dan's running coach reviewing one session. Dan is 52, a returning runner in walk-to-run base building for a 5K (Oct 17) then a 15K (Jan 31, 2027).
+
+THIS IS ABOUT EXECUTION DISCIPLINE, NOT FITNESS. His aerobic fitness is fine; every meaningful failure has been a pacing-control failure. NEVER congratulate him for running faster or "finishing strong" — a strong finish on an easy day is the exact failure being trained out.
+
+Rules, most important first:
+1. Perceived effort runs ~15 bpm hot. "It felt easy" is a prompt to check the trace, never corroboration.
+2. The back-half surge is the recurring failure: reps getting faster, late Zone 4/5 spikes. A well-executed easy session ends on its SLOWEST, calmest rep.
+3. Progression is cleared by DATA, not feeling. Graduation = talk test held throughout AND HR peaks only in the low 150s. State the criterion explicitly when you clear or hold him.
+4. External constraints beat willpower. Outdoors he has no governor (the treadmill belt was doing the pacing); the fix is a governor, not "try to hold back."
+5. Overstriding (faster pace at flat/low cadence, under 125 spm) is his hip-flexor mechanism — flag it and prescribe quicker turnover, not longer stride.
+6. Heat: Georgia summer adds 10–20 bpm; a hot day isn't automatically bad, but isn't automatically excused.
+7. Progression is jog LONGER and walk LESS — never run faster. There is no "next pace target." Current prescribed easy pace is ~13:30–14:00/mi.
+8. Do NOT give diet or calorie targets.
+
+What good looks like: jog reps within ~15 s/mi of each other, last rep slowest; avg HR 130–140; peaks 145–152; Zone 4 under 10%; Zone 5 ~zero; cadence trending to 125.
+
+You are given deterministic metrics already computed from the screenshots — trust them; short-interval GPS pace is noisy so read the trend, not any one rep. Be direct, warm, and concise. Give him credit for the part he earned before naming the part he didn't.`;
+
+async function narrateCoaching(run, detail, computed) {
+  if (!anthropic) return null;
+  const payload = {
+    date: run.date,
+    activityType: run.type,
+    surface: detail && detail.surface,
+    subjective: run.notes || null,
+    prescribedPace: '13:30–14:00/mi (easy)',
+    metrics: computed.metrics,
+    reps: (detail && detail.reps) || null,
+    zones: (detail && detail.zones) || null,
+    cadenceSpm: detail && detail.cadenceSpm,
+    elevationGainFt: detail && detail.elevationGainFt,
+    flagsComputed: computed.flags,
+  };
+  const response = await anthropic.beta.messages.create({
+    model: 'claude-opus-5',
+    max_tokens: 1200,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    system: COACH_SYSTEM,
+    output_config: { format: { type: 'json_schema', schema: NARRATIVE_SCHEMA } },
+    messages: [{ role: 'user', content: `Review this session and return the structured read.\n\n${JSON.stringify(payload, null, 2)}` }],
+  });
+  if (response.stop_reason === 'refusal') return null;
+  const tb = response.content.find((b) => b.type === 'text');
+  if (!tb) return null;
+  return JSON.parse(tb.text);
+}
+
+// full pass: compute + narrate + persist on the run
+async function analyzeAndStore(run, detail) {
+  const computed = computeCoaching(run, detail);
+  let narrative = null;
+  try { narrative = await narrateCoaching(run, detail, computed); }
+  catch (err) { console.error('narrateCoaching failed:', err.message); }
+  const coaching = {
+    generatedAt: new Date().toISOString(),
+    treadmill: computed.treadmill,
+    metrics: computed.metrics,
+    flags: computed.flags,
+    verdict: narrative && narrative.verdict,
+    observations: (narrative && narrative.observations) || [],
+    advancement: narrative && narrative.advancement,
+  };
+  await pool.query('UPDATE runs SET coaching = $1 WHERE id = $2', [JSON.stringify(coaching), run.id]);
+  return coaching;
+}
+
+const REP_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['jogSecPerMi', 'walkSecPerMi'],
+  properties: {
+    jogSecPerMi: { type: ['integer', 'null'], description: 'Jog/run interval pace in seconds per mile (e.g. 12:07/mi = 727)' },
+    walkSecPerMi: { type: ['integer', 'null'], description: 'Following walk/recovery pace in seconds per mile' },
+  },
+};
+
+const ZONES_SCHEMA = {
+  type: ['object', 'null'], additionalProperties: false,
+  required: ['z1Sec', 'z2Sec', 'z3Sec', 'z4Sec', 'z5Sec'],
+  properties: {
+    z1Sec: { type: ['integer', 'null'] }, z2Sec: { type: ['integer', 'null'] },
+    z3Sec: { type: ['integer', 'null'] }, z4Sec: { type: ['integer', 'null'] },
+    z5Sec: { type: ['integer', 'null'] },
+  },
+};
+
 const IMPORT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['activityType', 'date', 'miles', 'seconds', 'avgHr', 'maxHr', 'notes', 'mapImageIndex'],
+  required: ['activityType', 'date', 'miles', 'seconds', 'avgHr', 'maxHr', 'notes', 'mapImageIndex',
+    'surface', 'cadenceSpm', 'elevationGainFt', 'warmupSecPerMi', 'reps', 'zones'],
   properties: {
     activityType: { type: 'string', enum: ['run', 'walk', 'hike', 'ride', 'workout', 'other'] },
     mapImageIndex: { type: ['integer', 'null'], description: '0-based index of the image that shows a route map (a GPS trace on a map), or null if none do' },
@@ -339,6 +573,16 @@ const IMPORT_SCHEMA = {
     avgHr: { type: ['integer', 'null'] },
     maxHr: { type: ['integer', 'null'] },
     notes: { type: 'string', description: 'One or two sentences: interval structure, cadence, elevation gain, calories, HR zone split — whatever is visible' },
+    surface: { type: ['string', 'null'], enum: ['treadmill', 'outdoor', null], description: 'treadmill if a belt speed / no GPS map; outdoor if there is a GPS route/map; null if unclear' },
+    cadenceSpm: { type: ['integer', 'null'], description: 'Average cadence in steps per minute' },
+    elevationGainFt: { type: ['number', 'null'], description: 'Elevation gain in feet' },
+    warmupSecPerMi: { type: ['integer', 'null'], description: 'Warm-up pace in seconds per mile, if a distinct warm-up segment is shown' },
+    reps: {
+      type: ['array', 'null'],
+      description: 'One entry per interval, in order, from the per-interval/splits screen (Workout/Recovery rows). Null if no interval breakdown is visible.',
+      items: REP_SCHEMA,
+    },
+    zones: ZONES_SCHEMA,
   },
 };
 
@@ -376,8 +620,13 @@ app.post('/api/import', async (req, res) => {
 - miles: total distance in miles (convert km to miles if the app shows km); null for non-distance activities like strength workouts.
 - seconds: total workout duration in seconds.
 - date: the workout date as YYYY-MM-DD only if a date is visible in the screenshots, else null. Today is ${defaultDate || 'unknown'}.
-- notes: a compact 1-2 sentence summary of what's visible: interval structure (e.g. "1:00/1:30 ×8"), cadence, elevation gain, calories, HR zone split, location.
-- mapImageIndex: the 0-based index of the image containing a route map (GPS trace drawn on a map), or null if no image shows one.`,
+- notes: a compact 1-2 sentence summary of what's visible: interval structure (e.g. "1:00/1:30 ×8"), cadence, elevation gain, calories, HR zone split, location. If a subjective "how it felt" note is visible, include it.
+- mapImageIndex: the 0-based index of the image containing a route map (GPS trace drawn on a map), or null if no image shows one.
+- surface: "treadmill" if a belt speed is shown or there is no GPS map; "outdoor" if a GPS route/map is present; null if unclear.
+- cadenceSpm, elevationGainFt: from the summary if shown.
+- warmupSecPerMi: pace of the warm-up segment if the splits screen shows a distinct warm-up row.
+- reps: if a per-interval / splits screen is present (rows like Warm-up / Workout / Recovery with a Pace column), return one array entry per WORK interval in order — jogSecPerMi = that Workout row's pace in seconds per mile, walkSecPerMi = the following Recovery row's pace. Convert mm'ss" to total seconds (12'07" = 727). Do NOT include the warm-up as a rep. Null if no per-interval breakdown is visible.
+- zones: seconds spent in each HR zone from the Heart rate zones screen (convert mm:ss to seconds). Null if no zone breakdown is shown.`,
             },
           ],
         },
@@ -422,10 +671,53 @@ app.post('/api/import', async (req, res) => {
       mapPhotoId = photoIds[mi];
       await pool.query('UPDATE runs SET map_photo_id = $1 WHERE id = $2', [mapPhotoId, created.id]);
     }
-    res.status(201).json({ run: { ...created, photoIds, mapPhotoId } });
+
+    // capture session detail for the coaching pass
+    const reps = Array.isArray(parsed.reps)
+      ? parsed.reps.filter((r) => r && (Number.isFinite(r.jogSecPerMi) || Number.isFinite(r.walkSecPerMi)))
+          .map((r, i) => ({ n: i + 1, jogSecPerMi: r.jogSecPerMi ?? null, walkSecPerMi: r.walkSecPerMi ?? null }))
+      : [];
+    const detail = {
+      surface: parsed.surface || null,
+      cadenceSpm: Number.isFinite(parsed.cadenceSpm) ? parsed.cadenceSpm : null,
+      elevationGainFt: Number.isFinite(parsed.elevationGainFt) ? parsed.elevationGainFt : null,
+      warmupSecPerMi: Number.isFinite(parsed.warmupSecPerMi) ? parsed.warmupSecPerMi : null,
+      reps,
+      zones: parsed.zones || null,
+    };
+    await pool.query('UPDATE runs SET detail = $1 WHERE id = $2', [JSON.stringify(detail), created.id]);
+    created.detail = detail;
+
+    // coach the interval running sessions automatically
+    let coaching = null;
+    if (created.type === 'run' && (reps.length >= 2 || detail.zones)) {
+      try { coaching = await analyzeAndStore(created, detail); }
+      catch (err) { console.error('auto-coaching failed:', err.message); }
+    }
+    res.status(201).json({ run: { ...created, photoIds, mapPhotoId, coaching } });
   } catch (err) {
     console.error('POST /api/import failed:', err.message);
     res.status(500).json({ error: 'Import failed — try again or add the workout manually.' });
+  }
+});
+
+// re-run the coaching read on an existing run (manual button)
+app.post('/api/runs/:id/analyze', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad id' });
+  try {
+    const { rows } = await pool.query(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'Run not found' });
+    const run = rows[0];
+    const detail = run.detail || null;
+    if (!detail || (!(detail.reps && detail.reps.length >= 2) && !detail.zones)) {
+      return res.status(422).json({ error: 'Not enough detail to analyze — import the interval-splits and HR-zone screenshots for this run.' });
+    }
+    const coaching = await analyzeAndStore(run, detail);
+    res.json({ coaching });
+  } catch (err) {
+    console.error('POST /api/runs/:id/analyze failed:', err.message);
+    res.status(500).json({ error: 'Analysis failed — try again.' });
   }
 });
 

@@ -1125,6 +1125,9 @@ function buildDetailRow(r) {
     td.appendChild(notes);
   }
 
+  // coaching read
+  if (r.coaching) td.appendChild(buildCoachingBlock(r));
+
   // route map: a designated screenshot shown large, Strava-style
   const setMap = async (photoId) => {
     try {
@@ -1247,11 +1250,108 @@ function buildDetailRow(r) {
     } catch (err) { alert(err.message); }
     renderTable();
   });
+  // coaching read (re)run — only meaningful for runs
+  if (r.type === 'run' || !r.type) {
+    const coachBtn = document.createElement('button');
+    coachBtn.type = 'button';
+    coachBtn.textContent = r.coaching ? '🔄 Re-run coaching read' : '🏃 Coaching read';
+    coachBtn.addEventListener('click', async () => {
+      coachBtn.disabled = true;
+      const orig = coachBtn.textContent;
+      coachBtn.textContent = 'Analyzing… ~15s';
+      try {
+        const { coaching } = await api(`/api/runs/${r.id}/analyze`, { method: 'POST' });
+        r.coaching = coaching;
+        renderTable();
+      } catch (err) {
+        alert(err.message);
+        coachBtn.textContent = orig;
+        coachBtn.disabled = false;
+      }
+    });
+    actions.append(coachBtn);
+  }
   actions.append(edit, del, addPhoto, fileInput);
   td.appendChild(actions);
 
   tr.appendChild(td);
   return tr;
+}
+
+const GATE_LABEL = { peaksOk: 'HR peaks ≤ low 150s', noSurge: 'No back-half surge', zonesOk: 'Zone 4+ under 10%' };
+
+function buildCoachingBlock(r) {
+  const c = r.coaching;
+  const box = document.createElement('div');
+  box.className = 'coach-box';
+
+  const head = document.createElement('div');
+  head.className = 'coach-head';
+  const title = document.createElement('span');
+  title.className = 'coach-title';
+  title.textContent = '🏃 Coaching read';
+  head.appendChild(title);
+  if (c.metrics && c.metrics.gate) {
+    const gate = document.createElement('span');
+    gate.className = 'coach-gate ' + (c.metrics.gate.pass ? 'pass' : 'hold');
+    gate.textContent = c.metrics.gate.pass ? 'Advancement gate: PASS' : 'Advancement gate: HOLD';
+    head.appendChild(gate);
+  }
+  box.appendChild(head);
+
+  if (c.verdict) {
+    const v = document.createElement('div');
+    v.className = 'coach-verdict';
+    v.textContent = c.verdict;
+    box.appendChild(v);
+  }
+
+  for (const o of c.observations || []) {
+    const p = document.createElement('div');
+    p.className = 'coach-obs';
+    p.textContent = o;
+    box.appendChild(p);
+  }
+
+  if (c.advancement) {
+    const a = document.createElement('div');
+    a.className = 'coach-advance';
+    a.textContent = c.advancement;
+    box.appendChild(a);
+  }
+
+  // computed flag chips
+  if ((c.flags || []).length) {
+    const chips = document.createElement('div');
+    chips.className = 'coach-chips';
+    for (const f of c.flags) {
+      const chip = document.createElement('span');
+      chip.className = 'coach-chip ' + (f.level === 'flag' ? 'bad' : f.level === 'good' ? 'good' : 'info');
+      chip.textContent = (f.level === 'flag' ? '⚠ ' : f.level === 'good' ? '✓ ' : 'ℹ ') + f.text;
+      chips.appendChild(chip);
+    }
+    box.appendChild(chips);
+  }
+
+  // gate criteria detail
+  if (c.metrics && c.metrics.gate) {
+    const g = c.metrics.gate;
+    const line = document.createElement('div');
+    line.className = 'coach-gate-detail';
+    const parts = [];
+    for (const k of ['peaksOk', 'noSurge', 'zonesOk']) {
+      if (g[k] === null || g[k] === undefined) continue;
+      parts.push(`${g[k] ? '✓' : '✗'} ${GATE_LABEL[k]}`);
+    }
+    line.textContent = parts.join('  ·  ');
+    if (parts.length) box.appendChild(line);
+  }
+
+  const foot = document.createElement('div');
+  foot.className = 'coach-foot';
+  foot.textContent = 'Execution read from your screenshots — not medical advice. Perceived effort runs ~15 bpm hot; the data is the governor.';
+  box.appendChild(foot);
+  return box;
 }
 
 // ---------- forms ----------
@@ -1443,7 +1543,9 @@ function wireImport() {
       expandedRuns.add(run.id);
       renderAll();
       const what = `${actInfo(run.type)[1].toLowerCase()}${run.miles > 0 ? ` · ${fmtMiles(run.miles)} mi` : ''}`;
-      msg.textContent = `Imported: ${what} on ${fmtTable(run.date)} ✓ — check the expanded row below and edit anything I misread.`;
+      msg.textContent = run.coaching
+        ? `Imported: ${what} on ${fmtTable(run.date)} ✓ — coaching read is in the expanded row below.`
+        : `Imported: ${what} on ${fmtTable(run.date)} ✓ — check the expanded row below and edit anything I misread.`;
     } catch (err) {
       msg.textContent = err.message;
     }

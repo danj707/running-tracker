@@ -110,7 +110,8 @@
 
     <section class="card">
       <h2>Pace trend</h2>
-      <div class="card-sub">Average pace per run (runs only) — faster is up</div>
+      <div class="card-sub">Average pace per run — faster is up</div>
+      <div class="chart-controls"><div class="seg" id="paceToggle"></div></div>
       <div class="chart-wrap" id="paceChart"></div>
     </section>
 
@@ -122,7 +123,8 @@
       </section>
       <section class="card">
         <h2>Weekly avg pace</h2>
-        <div class="card-sub">Runs only — faster is up</div>
+        <div class="card-sub">Faster is up</div>
+        <div class="chart-controls"><div class="seg" id="weeklyPaceToggle"></div></div>
         <div class="chart-wrap" id="weeklyPaceChart"></div>
       </section>
     </div>
@@ -142,6 +144,7 @@
               <th class="num">Pace</th>
               <th class="num">Avg HR</th>
               <th class="mood-col">Felt</th>
+              <th class="mood-col">Read</th>
             </tr>
           </thead>
           <tbody></tbody>

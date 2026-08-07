@@ -2,7 +2,50 @@
 
 // ---------- state ----------
 
-const state = { runs: [], goals: {}, body: [], range: '12W' };
+const state = { runs: [], goals: {}, body: [], range: '12W', paceMode: 'run', weeklyPaceMode: 'run' };
+
+// "Running only" = mean of the jog-interval paces (excludes walk recovery);
+// falls back to overall pace when a run has no per-rep detail.
+function jogPaceMean(r) {
+  const reps = (r.detail && r.detail.reps) || [];
+  const j = reps.map((x) => x && x.jogSecPerMi).filter((v) => Number.isFinite(v) && v > 0);
+  return j.length ? j.reduce((a, b) => a + b, 0) / j.length : null;
+}
+function runPaceSecPerMi(r, mode) {
+  if (mode === 'run') {
+    const jp = jogPaceMean(r);
+    if (jp) return jp;
+  }
+  return r.miles > 0 ? r.seconds / r.miles : null;
+}
+
+// Execution-quality dot from the coaching read, for the log at a glance.
+function runQuality(r) {
+  if (r.type && r.type !== 'run') return null;
+  const c = r.coaching;
+  if (!c) return { dot: '⚪', label: 'No coaching read yet — import the splits + HR-zone screenshots' };
+  const m = c.metrics || {};
+  const hard = (c.flags || []).filter((f) => f.level === 'flag');
+  const blew = hard.some((f) => /surge|ran hot|above zone|overstrid|anaerobic/i.test(f.text))
+    || (m.maxHr && m.maxHr >= 158);
+  if (m.gate && m.gate.pass) return { dot: '🟢', label: 'Nailed it — held your parameters' };
+  if (blew) return { dot: '🔴', label: 'Blew it up — surged / ran hot' };
+  if (hard.length) return { dot: '🟡', label: 'Mixed — a couple of flags' };
+  return { dot: '🟢', label: 'Held your parameters' };
+}
+
+function buildPaceToggle(el, getMode, setMode) {
+  el.textContent = '';
+  el.className = 'seg pace-seg';
+  for (const [val, label] of [['run', 'Running only'], ['all', 'Incl. recovery']]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('aria-pressed', String(val === getMode()));
+    b.addEventListener('click', () => { setMode(val); });
+    el.appendChild(b);
+  }
+}
 
 const RANGES = [
   { key: '4W', label: '4 wk', weeks: 4 },
@@ -144,6 +187,22 @@ const TAGLINES = [
   'Every easy run is a vote for race day. 🗳️',
 ];
 
+// Curated hue palette — one "vibe" per day, cycled by day-of-year.
+// Each is a base hue (the cool arm); the warm arm is +28° in CSS.
+const BG_HUES = [
+  208, // sky blue
+  28,  // sunrise orange
+  150, // forest green
+  190, // teal
+  262, // indigo dusk
+  330, // magenta
+  45,  // gold
+  12,  // track red-clay
+  172, // spring green
+  228, // twilight
+];
+const ROUTE_BASE_HUE = 213; // the breadcrumb SVG's built-in blue
+
 function showApp(authRequired) {
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
@@ -151,6 +210,10 @@ function showApp(authRequired) {
   const now = new Date();
   const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
   $('#tagline').textContent = TAGLINES[dayOfYear % TAGLINES.length];
+  const hue = BG_HUES[dayOfYear % BG_HUES.length];
+  const root = document.documentElement.style;
+  root.setProperty('--bg-hue', String(hue));
+  root.setProperty('--route-rotate', `${hue - ROUTE_BASE_HUE}deg`);
 }
 
 async function init() {
@@ -537,9 +600,12 @@ function renderWeeklyChart() {
 }
 
 function renderPaceChart() {
+  buildPaceToggle($('#paceToggle'), () => state.paceMode, (v) => { state.paceMode = v; renderPaceChart(); });
   const wrap = $('#paceChart');
   wrap.textContent = '';
-  const runs = filteredRuns().filter((r) => (r.type === 'run' || !r.type) && r.miles > 0).slice().reverse(); // ascending by date
+  const runs = filteredRuns()
+    .filter((r) => (r.type === 'run' || !r.type) && Number.isFinite(runPaceSecPerMi(r, state.paceMode)))
+    .slice().reverse(); // ascending by date
   if (runs.length < 2) {
     const p = document.createElement('div');
     p.className = 'empty-note';
@@ -553,7 +619,7 @@ function renderPaceChart() {
   const plotW = width - mL - mR, plotH = height - mT - mB;
   const svg = svgEl('svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Pace trend line chart' });
 
-  const pts = runs.map((r) => ({ run: r, t: parseYmd(r.date).getTime(), pace: r.seconds / r.miles }));
+  const pts = runs.map((r) => ({ run: r, t: parseYmd(r.date).getTime(), pace: runPaceSecPerMi(r, state.paceMode) }));
   const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
   const paces = pts.map((p) => p.pace);
   let pMin = Math.min(...paces), pMax = Math.max(...paces);
@@ -795,18 +861,21 @@ function renderRunTrends() {
     emptyMsg: 'Log avg HR on two or more runs to see the trend.',
   });
 
-  // weekly average pace across runs with distance
+  // weekly average pace — distance-weighted mean of each run's chosen pace
+  buildPaceToggle($('#weeklyPaceToggle'), () => state.weeklyPaceMode, (v) => { state.weeklyPaceMode = v; renderRunTrends(); });
   const byWeek = new Map();
   for (const r of runs) {
     if (!(r.miles > 0)) continue;
+    const p = runPaceSecPerMi(r, state.weeklyPaceMode);
+    if (!Number.isFinite(p)) continue;
     const wk = ymd(weekStart(parseYmd(r.date)));
-    if (!byWeek.has(wk)) byWeek.set(wk, { miles: 0, sec: 0 });
+    if (!byWeek.has(wk)) byWeek.set(wk, { paceMiles: 0, miles: 0 });
     const b = byWeek.get(wk);
+    b.paceMiles += p * r.miles;
     b.miles += r.miles;
-    b.sec += r.seconds;
   }
   const weekPts = [...byWeek.entries()]
-    .map(([wk, b]) => ({ t: parseYmd(wk).getTime(), v: b.sec / b.miles, dateStr: wk }))
+    .map(([wk, b]) => ({ t: parseYmd(wk).getTime(), v: b.paceMiles / b.miles, dateStr: wk }))
     .sort((a, b) => a.t - b.t);
 
   renderMultiLine($('#weeklyPaceChart'), [{ name: 'Weekly pace', color: V1(), points: weekPts }], {
@@ -1072,6 +1141,13 @@ function renderTable() {
       tr.appendChild(td);
     }
 
+    const q = runQuality(r);
+    const qCell = document.createElement('td');
+    qCell.className = 'quality-cell';
+    qCell.textContent = q ? q.dot : '';
+    if (q) qCell.title = q.label;
+    tr.appendChild(qCell);
+
     const toggle = () => {
       if (expandedRuns.has(r.id)) expandedRuns.delete(r.id);
       else expandedRuns.add(r.id);
@@ -1091,7 +1167,7 @@ function buildDetailRow(r) {
   const tr = document.createElement('tr');
   tr.className = 'detail-row';
   const td = document.createElement('td');
-  td.colSpan = 8;
+  td.colSpan = 9;
 
   const grid = document.createElement('div');
   grid.className = 'detail-grid';
